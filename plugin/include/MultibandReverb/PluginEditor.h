@@ -2,6 +2,8 @@
 #pragma once
 
 #include "PluginProcessor.h"
+#include "SpectrumAnalyzer.h"
+
 
 class BandControls : public juce::Component
 {
@@ -27,35 +29,10 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BandControls)
 };
 
-class SpectrumAnalyzer : public juce::Component,
-                         public juce::Timer
-{
-public:
-    SpectrumAnalyzer();
-    ~SpectrumAnalyzer() override;
-    
-    void paint(juce::Graphics& g) override;
-    void resized() override;
-    void timerCallback() override;
-    
-    void pushBuffer(const float* data, int size);
-
-private:
-    juce::dsp::FFT fft;
-    juce::dsp::WindowingFunction<float> window;
-    
-    std::array<float, 2048> fftData;
-    std::array<float, 2048> fifo;
-    int fifoIndex = 0;
-    bool nextFFTBlockReady = false;
-    
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SpectrumAnalyzer)
-};
-
 class MultibandReverbAudioProcessorEditor : public juce::AudioProcessorEditor
 {
 public:
-    explicit MultibandReverbAudioProcessorEditor(MultibandReverbAudioProcessor&);
+    explicit MultibandReverbAudioProcessorEditor(MultibandReverbAudioProcessor& p);
     ~MultibandReverbAudioProcessorEditor() override;
 
     void paint(juce::Graphics&) override;

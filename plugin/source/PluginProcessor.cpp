@@ -9,8 +9,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout MultibandReverbAudioProcesso
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         "lowCross", 
         "Low Crossover",
-        juce::NormalisableRange<float>(20.0f, 2000.0f, 1.0f, 0.5f),
-        200.0f));
+        juce::NormalisableRange<float>(20.0f, 20000.0f, 1.0f, 0.5f),
+        20000.0f));
 
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         "midCross", 
@@ -79,34 +79,144 @@ void MultibandReverbAudioProcessor::prepareToPlay(double sampleRate, int samples
 
 void MultibandReverbAudioProcessor::releaseResources()
 {
-    // Release any allocated resources when playback stops
     transportComponent.releaseResources();
-
 }
 
 void MultibandReverbAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                                [[maybe_unused]] juce::MidiBuffer& midiMessages)
-{    
+{
     juce::ScopedNoDenormals noDenormals;
-    // Get the next block from the transport source
+    
+    // Get audio from transport if it's active
     juce::AudioSourceChannelInfo info(buffer);
     transportComponent.getNextAudioBlock(info);
-    
-    // Now process through your reverb chain
-    juce::dsp::AudioBlock<float> block(buffer);
 
-    auto totalNumInputChannels = getTotalNumInputChannels();
-    auto totalNumOutputChannels = getTotalNumOutputChannels();
+    const int numSamples = buffer.getNumSamples();
+    const int numChannels = buffer.getNumChannels();
 
-    // Clear any output channels that don't contain input data
-    for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i) {
-        buffer.clear(i, 0, buffer.getNumSamples());
+    // Create temporary buffers for band processing
+    juce::AudioBuffer<float> lowBuffer(numChannels, numSamples);
+    juce::AudioBuffer<float> midBuffer(numChannels, numSamples);
+    juce::AudioBuffer<float> highBuffer(numChannels, numSamples);
+
+    // Copy input to all bands initially
+    for (int channel = 0; channel < numChannels; ++channel)
+    {
+        lowBuffer.copyFrom(channel, 0, buffer, channel, 0, numSamples);
+        midBuffer.copyFrom(channel, 0, buffer, channel, 0, numSamples);
     }
+
+    // Create AudioBlocks for DSP processing
+    juce::dsp::AudioBlock<float> lowBlock(lowBuffer);
+    juce::dsp::AudioBlock<float> midBlock(midBuffer);
+    juce::dsp::AudioBlock<float> highBlock(highBuffer);
     
-    // TODO: Implement multiband processing:
-    // 1. Split the signal using crossover filters
-    // 2. Process each band through its reverb
-    // 3. Mix and sum the bands back together
+    // Process crossovers
+    if (crossovers.size() >= 2)
+    {
+        // Split into low and mid-high first
+        juce::dsp::ProcessContextReplacing<float> lowContext(lowBlock);
+        juce::dsp::ProcessContextReplacing<float> midHighContext(midBlock);
+        crossovers[0].lowpass.process(lowContext);
+        crossovers[0].highpass.process(midHighContext);
+
+        // Copy mid-high into high buffer before second split
+        for (int channel = 0; channel < numChannels; ++channel) {
+            highBuffer.copyFrom(channel, 0, midBuffer, channel, 0, numSamples);
+        }
+
+        // Now split mid-high into mid and high
+        juce::dsp::ProcessContextReplacing<float> midContext(midBlock);
+        juce::dsp::ProcessContextReplacing<float> highContext(highBlock);
+        crossovers[1].lowpass.process(midContext);
+        crossovers[1].highpass.process(highContext);
+    }
+
+    // Process each band through its reverb
+    for (size_t i = 0; i < bandReverbs.size(); ++i)
+    {
+        auto& reverb = bandReverbs[i];
+        if (reverb.convolution)
+        {
+            juce::AudioBuffer<float>* bandBuffer = nullptr;
+            switch (i)
+            {
+                case 0: bandBuffer = &lowBuffer; break;
+                case 1: bandBuffer = &midBuffer; break;
+                case 2: bandBuffer = &highBuffer; break;
+                default: break;
+            }
+
+            if (bandBuffer != nullptr)
+            {
+                // Create wet buffer for reverb
+                juce::AudioBuffer<float> wetBuffer(numChannels, numSamples);
+                for (int channel = 0; channel < numChannels; ++channel) {
+                    wetBuffer.copyFrom(channel, 0, *bandBuffer, channel, 0, numSamples);
+                }
+
+                // Process through convolution
+                juce::dsp::AudioBlock<float> wetBlock(wetBuffer);
+                juce::dsp::ProcessContextReplacing<float> wetContext(wetBlock);
+                reverb.convolution->process(wetContext);
+
+                // Mix wet and dry
+                const float wetGain = reverb.mix;
+                const float dryGain = 1.0f - wetGain;
+
+                for (int channel = 0; channel < numChannels; ++channel)
+                {
+                    auto* dry = bandBuffer->getWritePointer(channel);
+                    auto* wet = wetBuffer.getReadPointer(channel);
+
+                    for (int sample = 0; sample < numSamples; ++sample)
+                    {
+                        dry[sample] = dry[sample] * dryGain + wet[sample] * wetGain;
+                    }
+                }
+            }
+        }
+    }
+
+    // Clear the output buffer before mixing
+    buffer.clear();
+
+    // Mix all bands back together with equal gain
+    const float bandGain = 1.0f / 3.0f; // Normalize the output
+    for (int channel = 0; channel < numChannels; ++channel)
+    {
+        auto* output = buffer.getWritePointer(channel);
+        auto* low = lowBuffer.getReadPointer(channel);
+        auto* mid = midBuffer.getReadPointer(channel);
+        auto* high = highBuffer.getReadPointer(channel);
+
+        for (int sample = 0; sample < numSamples; ++sample)
+        {
+            output[sample] = (low[sample] + mid[sample] + high[sample]) * bandGain;
+        }
+    }
+
+    // Now push the processed audio to the analyzer
+    if (analyzer != nullptr)
+    {
+        float analysisBuf[2048];
+        const float* channelData = buffer.getReadPointer(0);
+        
+        if (buffer.getNumChannels() > 1)
+        {
+            const float* channel2Data = buffer.getReadPointer(1);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                analysisBuf[i] = (channelData[i] + channel2Data[i]) * 0.5f;
+            }
+        }
+        else
+        {
+            std::memcpy(analysisBuf, channelData, numSamples * sizeof(float));
+        }
+        
+        analyzer->pushBuffer(analysisBuf, numSamples);
+    }
 }
 
 juce::AudioProcessorEditor* MultibandReverbAudioProcessor::createEditor()
@@ -141,19 +251,59 @@ void MultibandReverbAudioProcessor::updateCrossoverFrequencies()
         if (!crossovers.empty()) {
             crossovers[0].lowpass.setCutoffFrequency(lowFreq);
             crossovers[0].highpass.setCutoffFrequency(lowFreq);
+            
+            if (crossovers.size() > 1) {
+                crossovers[1].lowpass.setCutoffFrequency(midFreq);
+                crossovers[1].highpass.setCutoffFrequency(midFreq);
+            }
         }
-        if (crossovers.size() > 1) {
-            crossovers[1].lowpass.setCutoffFrequency(midFreq);
-            crossovers[1].highpass.setCutoffFrequency(midFreq);
-        }
+        
+        DBG("Crossover frequencies updated - Low: " << lowFreq << " Hz, Mid: " << midFreq << " Hz");
     }
 }
 
 void MultibandReverbAudioProcessor::loadImpulseResponse(size_t bandIndex, 
-                                                       [[maybe_unused]] const juce::File& irFile)
+                                                       const juce::File& irFile)
 {
-    if (bandIndex < bandReverbs.size()) {
-        // TODO: Implement IR loading for the specified band
+    if (bandIndex < bandReverbs.size())
+    {
+        auto& reverb = bandReverbs[bandIndex];
+        
+        juce::AudioFormatManager formatManager;
+        formatManager.registerBasicFormats();
+        
+        std::unique_ptr<juce::AudioFormatReader> reader(formatManager.createReaderFor(irFile));
+        
+        if (reader != nullptr)
+        {
+            DBG("Loading IR file: " << irFile.getFullPathName());
+            DBG("Sample rate: " << reader->sampleRate);
+            DBG("Length in samples: " << reader->lengthInSamples);
+            
+            const auto numSamples = static_cast<int>(reader->lengthInSamples);
+            
+            reverb.irBuffer.setSize(1, numSamples);
+            reader->read(&reverb.irBuffer, 0, numSamples, 0, true, false);
+            
+            reverb.convolution = std::make_unique<juce::dsp::Convolution>();
+            reverb.convolution->prepare({ getSampleRate(), 
+                                        static_cast<uint32>(getBlockSize()), 
+                                        static_cast<uint32>(getTotalNumOutputChannels()) });
+            
+            reverb.convolution->loadImpulseResponse(
+                std::move(reverb.irBuffer),
+                getSampleRate(),
+                juce::dsp::Convolution::Stereo::no,
+                juce::dsp::Convolution::Trim::no,
+                juce::dsp::Convolution::Normalise::yes
+            );
+            
+            DBG("IR loaded successfully into band " << bandIndex);
+        }
+        else
+        {
+            DBG("Failed to read IR file");
+        }
     }
 }
 
@@ -165,7 +315,6 @@ void MultibandReverbAudioProcessor::parameterChanged(const juce::String& paramet
     }
 }
 
-// This creates new instances of the plugin
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new MultibandReverbAudioProcessor();

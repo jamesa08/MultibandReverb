@@ -16,5 +16,5 @@ The first run will take the most time because the dependencies (CPM, JUCE, and g
 
 Run:
 ```
-$ open build/plugin/MultibandReverb_artefacts/Standalone/MultibandReverb.app
+$ ./build/plugin/MultibandReverb_artefacts/Standalone/MultibandReverb.app/Contents/MacOS/MultibandReverb
 ```

@@ -3,6 +3,8 @@
 #include <JuceHeader.h>
 #include "AudioTransport.h"
 
+class SpectrumAnalyzer;
+
 class MultibandReverbAudioProcessor : public juce::AudioProcessor, 
                                     public juce::AudioProcessorValueTreeState::Listener
 {
@@ -13,6 +15,7 @@ public:
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    SpectrumAnalyzer* analyzer = nullptr;
     
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
@@ -38,10 +41,6 @@ public:
 
     void updateCrossoverFrequencies();
     void loadImpulseResponse(size_t bandIndex, const juce::File& irFile);
-
-
-private:
-    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     
     struct CrossoverFilter {
         juce::dsp::LinkwitzRileyFilter<float> lowpass;
@@ -63,10 +62,16 @@ private:
         BandReverb(BandReverb&&) = default;
         BandReverb& operator=(BandReverb&&) = default;
     };
-    
+
     std::vector<CrossoverFilter> crossovers;
     std::vector<BandReverb> bandReverbs;
+
+
+
+private:
+    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     
+        
     std::atomic<float>* lowCrossoverFreq = nullptr;
     std::atomic<float>* midCrossoverFreq = nullptr;
     
