@@ -1,38 +1,90 @@
-// PluginEditor.cpp
+#include "MultibandReverb/PluginProcessor.h"
 #include "MultibandReverb/PluginEditor.h"
 
 //==============================================================================
+// BandControls Implementation
 BandControls::BandControls(const juce::String& bandName, size_t bandIndex, 
-                          MultibandReverbAudioProcessor& processor)
-    : name(bandName), bandIdx(bandIndex), processorRef(processor)
+                         MultibandReverbAudioProcessor& processor,
+                         juce::AudioProcessorValueTreeState& params)
+    : name(bandName)
+    , bandIdx(bandIndex)
+    , processorRef(processor)
 {
-    addAndMakeVisible(nameLabel);
-    nameLabel.setText(name + " Band", juce::dontSendNotification);
-    auto font = juce::Font(16.0f);
-    font.setBold(true);
-    nameLabel.setFont(font);
-    
+    // IR Load Button
     addAndMakeVisible(irLoadButton);
+    irLoadButton.setButtonText("Load IR");
     irLoadButton.onClick = [this] { loadIRButtonClicked(); };
-    
+
+    // Mix Slider
     addAndMakeVisible(mixSlider);
     mixSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
     mixSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);
-    mixSlider.setRange(0.0, 100.0, 1.0);
-    mixSlider.setValue(50.0);
     
+    // Volume Slider
+    addAndMakeVisible(volumeSlider);
+    volumeSlider.setSliderStyle(juce::Slider::LinearVertical);
+    volumeSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);
+
+    // Labels
+    addAndMakeVisible(nameLabel);
+    nameLabel.setText(name + " Band", juce::dontSendNotification);
+    nameLabel.setJustificationType(juce::Justification::centred);
+    auto font = juce::Font(16.0f);
+    font.setBold(true);
+    nameLabel.setFont(font);
+
     addAndMakeVisible(mixLabel);
-    mixLabel.setText("Mix %", juce::dontSendNotification);
-    mixLabel.attachToComponent(&mixSlider, false);
+    mixLabel.setText("Mix", juce::dontSendNotification);
+    mixLabel.setJustificationType(juce::Justification::centred);
 
+    addAndMakeVisible(volumeLabel);
+    volumeLabel.setText("Volume", juce::dontSendNotification);
+    volumeLabel.setJustificationType(juce::Justification::centred);
 
-    mixSlider.onValueChange = [this]
-    {
-        if (bandIdx < processorRef.bandReverbs.size())
-        {
-            processorRef.bandReverbs[bandIdx].mix = mixSlider.getValue() / 100.0f;
-        }
-    };
+    // Create attachments
+    mixAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        params, "mix" + juce::String(bandIdx), mixSlider);
+    volumeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        params, "vol" + juce::String(bandIdx), volumeSlider);
+}
+
+void BandControls::paint(juce::Graphics& g)
+{
+    auto bounds = getLocalBounds().toFloat();
+    g.setColour(juce::Colours::darkgrey);
+    g.fillRoundedRectangle(bounds, 10.0f);
+    
+    g.setColour(juce::Colours::white);
+    g.drawRoundedRectangle(bounds, 10.0f, 1.0f);
+}
+
+void BandControls::resized()
+{
+    auto bounds = getLocalBounds().reduced(10);
+    
+    // Band name at top
+    nameLabel.setBounds(bounds.removeFromTop(25));
+    
+    bounds.removeFromTop(5); // Spacing
+    
+    // IR Load button
+    irLoadButton.setBounds(bounds.removeFromTop(30));
+    
+    bounds.removeFromTop(10); // Spacing
+    
+    // Create a horizontal layout for mix and volume
+    auto controlArea = bounds;
+    auto mixArea = controlArea.removeFromLeft(controlArea.getWidth() / 2);
+    
+    // Mix controls
+    mixLabel.setBounds(mixArea.removeFromTop(20));
+    mixArea.removeFromTop(5);
+    mixSlider.setBounds(mixArea);
+    
+    // Volume controls
+    volumeLabel.setBounds(controlArea.removeFromTop(20));
+    controlArea.removeFromTop(5);
+    volumeSlider.setBounds(controlArea);
 }
 
 void BandControls::loadIRButtonClicked()
@@ -57,29 +109,13 @@ void BandControls::loadIRButtonClicked()
     });
 }
 
-void BandControls::paint(juce::Graphics& g)
-{
-    g.setColour(juce::Colours::white.withAlpha(0.1f));
-    g.fillRoundedRectangle(getLocalBounds().toFloat(), 10.0f);
-}
-
-void BandControls::resized()
-{
-    auto area = getLocalBounds().reduced(10);
-    nameLabel.setBounds(area.removeFromTop(20));
-    
-    auto controlArea = area.reduced(10);
-    irLoadButton.setBounds(controlArea.removeFromTop(30));
-    
-    controlArea.removeFromTop(10);
-    mixSlider.setBounds(controlArea);
-}
-
 //==============================================================================
+// SpectrumAnalyzer Implementation
 SpectrumAnalyzer::SpectrumAnalyzer() 
     : fft(11),  // 2048 points
       window(2048, juce::dsp::WindowingFunction<float>::hann)
 {
+    std::cout << "SpectrumAnalyzer created" << std::endl;
     startTimerHz(60); // 60 fps refresh rate
     setOpaque(true);
 }
@@ -164,14 +200,13 @@ void SpectrumAnalyzer::paint(juce::Graphics& g)
     }
 }
 
-
 void SpectrumAnalyzer::timerCallback()
 {
     if (nextFFTBlockReady)
     {
-        window.multiplyWithWindowingTable(fftData.data(), 2048);
+        window.multiplyWithWindowingTable(fftData.data(), fftData.size());
         fft.performFrequencyOnlyForwardTransform(fftData.data());
-
+        
         // Apply temporal smoothing
         for (size_t i = 0; i < fftData.size(); ++i)
         {
@@ -184,32 +219,6 @@ void SpectrumAnalyzer::timerCallback()
     }
 }
 
-float SpectrumAnalyzer::getSmoothedValueForFrequency(float freq, float minFreq, float maxFreq, int width)
-{
-    auto getNormalizedBinValue = [this](int bin) {
-        if (bin >= 0 && bin < 2048)
-            return smoothedFFTData[bin];
-        return 0.0f;
-    };
-
-    // Calculate which FFT bin corresponds to this frequency
-    float binFreq = freq * 2048.0f / 44100.0f;
-    int centralBin = juce::jlimit(0, 1024, (int)binFreq);
-    
-    // Average over nearby bins for spectral smoothing
-    float sum = 0.0f;
-    int count = 0;
-    
-    for (int i = -spectralAveraging; i <= spectralAveraging; ++i)
-    {
-        sum += getNormalizedBinValue(centralBin + i);
-        count++;
-    }
-    
-    return sum / count;
-}
-
-
 void SpectrumAnalyzer::pushBuffer(const float* data, int size)
 {
     if (size > 0)
@@ -219,7 +228,7 @@ void SpectrumAnalyzer::pushBuffer(const float* data, int size)
             fifo[static_cast<size_t>(fifoIndex)] = data[i];
             ++fifoIndex;
             
-            if (fifoIndex >= 2048)
+            if (fifoIndex >= fifo.size())
             {
                 std::copy(fifo.begin(), fifo.end(), fftData.begin());
                 nextFFTBlockReady = true;
@@ -229,46 +238,59 @@ void SpectrumAnalyzer::pushBuffer(const float* data, int size)
     }
 }
 
+float SpectrumAnalyzer::getSmoothedValueForFrequency(float freq, float minFreq, float maxFreq, int width)
+{
+    auto binFreq = freq * 2048.0f / 44100.0f;  // Assuming 44.1kHz sample rate
+    int bin = juce::jlimit(0, 1024, (int)binFreq);
+    
+    float sum = 0.0f;
+    int count = 0;
+    
+    // Average over nearby bins for smoother display
+    for (int i = -spectralAveraging; i <= spectralAveraging; ++i)
+    {
+        if (bin + i >= 0 && bin + i < 1024)
+        {
+            sum += smoothedFFTData[bin + i];
+            ++count;
+        }
+    }
+    
+    return count > 0 ? sum / count : 0.0f;
+}
+
 void SpectrumAnalyzer::resized()
 {
 }
 
+
 //==============================================================================
 MultibandReverbAudioProcessorEditor::MultibandReverbAudioProcessorEditor(MultibandReverbAudioProcessor& p)
-    : AudioProcessorEditor(&p), processorRef(p)
+    : AudioProcessorEditor(&p)
+    , processorRef(p)
+    , analyzer()
+    , lowBand("Low", 0, p, p.parameters)
+    , highBand("High", 1, p, p.parameters)
 {
-    setSize(800, 700);  // Made taller
+    setSize(800, 700);
     
-    // Connect analyzer
     processorRef.analyzer = &analyzer;
-
-    // Transport controls
-    addAndMakeVisible(processorRef.transportComponent);
     
-    // Set up crossover frequency sliders
-    addAndMakeVisible(lowCrossoverSlider);
-    addAndMakeVisible(midCrossoverSlider);
-    
-    lowCrossoverSlider.setSliderStyle(juce::Slider::LinearHorizontal);
-    lowCrossoverSlider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 80, 20);
-    lowCrossoverSlider.setRange(20.0, 2000.0, 1.0);
-    
-    midCrossoverSlider.setSliderStyle(juce::Slider::LinearHorizontal);
-    midCrossoverSlider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 80, 20);
-    midCrossoverSlider.setRange(1000.0, 20000.0, 1.0);
-    
-    // Connect parameters
-    sliderAttachments.push_back(std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
-        processorRef.parameters, "lowCross", lowCrossoverSlider));
-    sliderAttachments.push_back(std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
-        processorRef.parameters, "midCross", midCrossoverSlider));
-    
-    // Add band controls
+    // Add and make visible all components
     addAndMakeVisible(lowBand);
-    addAndMakeVisible(midBand);
     addAndMakeVisible(highBand);
+    addAndMakeVisible(crossoverSlider);
     
-    // Add spectrum analyzer
+    // Set up crossover slider
+    crossoverSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+    crossoverSlider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 80, 20);
+    crossoverSlider.setRange(20.0, 20000.0, 1.0);
+    
+    // Create attachment for crossover
+    crossoverAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        processorRef.parameters, "crossover", crossoverSlider);
+        
+    // Connect analyzer
     addAndMakeVisible(analyzer);
 }
 
@@ -279,34 +301,30 @@ MultibandReverbAudioProcessorEditor::~MultibandReverbAudioProcessorEditor()
 
 void MultibandReverbAudioProcessorEditor::paint(juce::Graphics& g)
 {
-    g.fillAll(juce::Colours::darkgrey);
+    g.fillAll(juce::Colours::black);
 }
 
 void MultibandReverbAudioProcessorEditor::resized()
 {
-    auto bounds = getLocalBounds().reduced(20);
-    
-    // Transport controls at the very top
-    processorRef.transportComponent.setBounds(bounds.removeFromTop(70));
-    
-    bounds.removeFromTop(20); // Spacing
-    
-    // Spectrum analyzer below transport
-    analyzer.setBounds(bounds.removeFromTop(200));
-    
-    bounds.removeFromTop(20); // Spacing
-    
-    // Crossover controls
-    auto crossoverBounds = bounds.removeFromTop(60);
-    lowCrossoverSlider.setBounds(crossoverBounds.removeFromTop(25));
-    midCrossoverSlider.setBounds(crossoverBounds.removeFromTop(25));
-    
-    bounds.removeFromTop(20); // Spacing
-    
-    // Band controls
-    auto bandWidth = bounds.getWidth() / 3;
-    lowBand.setBounds(bounds.removeFromLeft(bandWidth).reduced(5));
-    midBand.setBounds(bounds.removeFromLeft(bandWidth).reduced(5));
-    highBand.setBounds(bounds.reduced(5));
-}
+    auto bounds = getLocalBounds();
 
+    // Set the bounds for the spectrum analyzer
+    analyzer.setBounds(bounds.removeFromTop(200));
+
+    // Set the bounds for the crossover slider
+    auto crossoverBounds = bounds.removeFromTop(50);
+    crossoverBounds.reduce(10, 0);
+    crossoverSlider.setBounds(crossoverBounds);
+
+    // Set the bounds for the band controls
+    auto bandControlsWidth = bounds.getWidth() / 2;
+    auto bandControlsHeight = bounds.getHeight();
+
+    auto lowBandBounds = bounds.removeFromLeft(bandControlsWidth);
+    lowBandBounds.reduce(10, 10);
+    lowBand.setBounds(lowBandBounds);
+
+    auto highBandBounds = bounds;
+    highBandBounds.reduce(10, 10);
+    highBand.setBounds(highBandBounds);
+}
