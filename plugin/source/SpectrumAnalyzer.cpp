@@ -1,4 +1,5 @@
 #include "MultibandReverb/SpectrumAnalyzer.h"
+#include "MultibandReverb/PluginProcessor.h"
 
 //==============================================================================
 SpectrumAnalyzer::SpectrumAnalyzer()
@@ -9,6 +10,68 @@ SpectrumAnalyzer::SpectrumAnalyzer()
 }
 
 SpectrumAnalyzer::~SpectrumAnalyzer() { stopTimer(); }
+
+float SpectrumAnalyzer::getFrequencyForX(float x) {
+    const float minFreq = 20.0f;
+    const float maxFreq = 20000.0f;
+    const float width = static_cast<float>(getWidth());
+
+    return std::exp(std::log(minFreq) + (std::log(maxFreq) - std::log(minFreq)) * x / width);
+}
+
+float SpectrumAnalyzer::getXForFrequency(float freq) {
+    const float minFreq = 20.0f;
+    const float maxFreq = 20000.0f;
+    const float width = static_cast<float>(getWidth());
+
+    return width * (std::log(freq) - std::log(minFreq)) / (std::log(maxFreq) - std::log(minFreq));
+}
+
+bool SpectrumAnalyzer::isNearCrossover(float x, float crossoverX, float tolerance) { return std::abs(x - crossoverX) < tolerance; }
+
+void SpectrumAnalyzer::mouseDown(const juce::MouseEvent &e) {
+    const float x = static_cast<float>(e.x);
+    const float lowX = getXForFrequency(lowCrossoverFreq);
+    const float midX = getXForFrequency(midCrossoverFreq);
+
+    if (isNearCrossover(x, lowX)) {
+        currentDrag = Low;
+        setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+    } else if (isNearCrossover(x, midX)) {
+        currentDrag = Mid;
+        setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+    } else {
+        currentDrag = None;
+    }
+}
+
+void SpectrumAnalyzer::mouseDrag(const juce::MouseEvent &e) {
+    if (currentDrag == None || audioProcessor == nullptr)
+        return;
+
+    float newFreq = getFrequencyForX(static_cast<float>(e.x));
+
+    if (currentDrag == Low) {
+        newFreq = juce::jlimit(20.0f, midCrossoverFreq - 100.0f, newFreq);
+        lowCrossoverFreq = newFreq;
+        if (auto *param = audioProcessor->parameters.getParameter("lowCross")) {
+            param->setValueNotifyingHost(param->convertTo0to1(newFreq));
+        }
+    } else if (currentDrag == Mid) {
+        newFreq = juce::jlimit(lowCrossoverFreq + 100.0f, 20000.0f, newFreq);
+        midCrossoverFreq = newFreq;
+        if (auto *param = audioProcessor->parameters.getParameter("midCross")) {
+            param->setValueNotifyingHost(param->convertTo0to1(newFreq));
+        }
+    }
+
+    repaint();
+}
+
+void SpectrumAnalyzer::mouseUp(const juce::MouseEvent &) {
+    currentDrag = None;
+    setMouseCursor(juce::MouseCursor::NormalCursor);
+}
 
 void SpectrumAnalyzer::paint(juce::Graphics &g) {
     g.fillAll(juce::Colours::black);
@@ -72,6 +135,32 @@ void SpectrumAnalyzer::paint(juce::Graphics &g) {
         g.setColour(juce::Colours::white.withAlpha(0.2f));
         g.drawText(juce::String(level) + "dB", width - 35, (int)y - 10, 30, 20, juce::Justification::right);
     }
+
+    // Update crossover line drawing
+    g.setColour(juce::Colours::yellow.withAlpha(0.5f));
+
+    const auto mousePos = getMouseXYRelative();
+    const float lowX = getXForFrequency(lowCrossoverFreq);
+    const float midX = getXForFrequency(midCrossoverFreq);
+
+    // Draw low crossover line with hover effect
+    bool isLowHovered = isNearCrossover(static_cast<float>(mousePos.x), lowX);
+    g.setColour(juce::Colours::yellow.withAlpha(isLowHovered ? 0.8f : 0.5f));
+    g.drawVerticalLine(static_cast<int>(lowX), 0.0f, static_cast<float>(getHeight()));
+    g.drawText("Low", static_cast<int>(lowX) - 20, getHeight() - 40, 40, 20, juce::Justification::centred);
+
+    // Draw mid crossover line with hover effect
+    bool isMidHovered = isNearCrossover(static_cast<float>(mousePos.x), midX);
+    g.setColour(juce::Colours::yellow.withAlpha(isMidHovered ? 0.8f : 0.5f));
+    g.drawVerticalLine(static_cast<int>(midX), 0.0f, static_cast<float>(getHeight()));
+    g.drawText("Mid", static_cast<int>(midX) - 20, getHeight() - 40, 40, 20, juce::Justification::centred);
+
+    // Update cursor
+    if ((isLowHovered || isMidHovered) && currentDrag == None) {
+        setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+    } else if (!isLowHovered && !isMidHovered && currentDrag == None) {
+        setMouseCursor(juce::MouseCursor::NormalCursor);
+    }
 }
 
 void SpectrumAnalyzer::timerCallback() {
@@ -128,3 +217,9 @@ void SpectrumAnalyzer::pushBuffer(const float *data, int size) {
 }
 
 void SpectrumAnalyzer::resized() {}
+
+void SpectrumAnalyzer::setCrossoverFrequencies(float lowCross, float midCross) {
+    lowCrossoverFreq = lowCross;
+    midCrossoverFreq = midCross;
+    repaint();
+}

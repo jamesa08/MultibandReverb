@@ -50,6 +50,8 @@ class MultibandReverbAudioProcessor : public juce::AudioProcessor, public juce::
         std::unique_ptr<juce::dsp::Convolution> convolution;
         juce::AudioBuffer<float> irBuffer;
         float mix = 0.5f;
+        bool isSoloed = false;
+        bool isMuted = false;
 
         BandReverb() : convolution(std::make_unique<juce::dsp::Convolution>()) {}
 
@@ -61,6 +63,8 @@ class MultibandReverbAudioProcessor : public juce::AudioProcessor, public juce::
         BandReverb(BandReverb &&) = default;
         BandReverb &operator=(BandReverb &&) = default;
     };
+
+    void updateSoloMuteStates();
 
     std::vector<CrossoverFilter> crossovers;
     std::vector<BandReverb> bandReverbs;

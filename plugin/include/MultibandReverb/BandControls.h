@@ -1,27 +1,39 @@
 #pragma once
-#include <JuceHeader.h>
 #include "PluginProcessor.h"
+#include <JuceHeader.h>
 
-class BandControls : public juce::Component {
-  public:
-    BandControls(const juce::String &bandName, size_t bandIndex, MultibandReverbAudioProcessor &processor);
+class BandControls : public juce::Component
+{
+public:
+    BandControls(const juce::String& bandName, size_t bandIndex, MultibandReverbAudioProcessor& processor);
     ~BandControls() override;
-    void paint(juce::Graphics &g) override;
-    void resized() override;
 
-  private:
+    void paint(juce::Graphics& g) override;
+    void resized() override;
     void loadIRButtonClicked();
+
+private:
+    juce::Label nameLabel{"", "Band"};
+    juce::TextButton irLoadButton{"Load IR"};
+    juce::Slider mixSlider;
+    juce::Label mixLabel;
+    juce::Slider volumeSlider;
+    juce::Label volumeLabel;
+    juce::Slider crossoverSlider;
+    juce::Label crossoverLabel;
+    juce::TextButton soloButton{"S"};
+    juce::TextButton muteButton{"M"};
+
+    std::unique_ptr<juce::FileChooser> fileChooser;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> crossoverAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> volumeAttachment;
 
     juce::String name;
     size_t bandIdx;
-    MultibandReverbAudioProcessor &processorRef;
+    bool isSoloed = false;
+    bool isMuted = false;
 
-    juce::TextButton irLoadButton{"Load IR"};
-    juce::Slider mixSlider;
-    juce::Label nameLabel;
-    juce::Label mixLabel;
-
-    std::unique_ptr<juce::FileChooser> fileChooser;
+    MultibandReverbAudioProcessor& processorRef;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BandControls)
 };

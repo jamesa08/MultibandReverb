@@ -6,9 +6,13 @@
 juce::AudioProcessorValueTreeState::ParameterLayout MultibandReverbAudioProcessor::createParameterLayout() {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("lowCross", "Low Crossover", juce::NormalisableRange<float>(20.0f, 20000.0f, 1.0f, 0.5f), 20000.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>("lowCross", "Low Crossover", juce::NormalisableRange<float>(20.0f, 20000.0f, 1.0f, 0.3f), 250.0f));
 
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("midCross", "Mid Crossover", juce::NormalisableRange<float>(1000.0f, 20000.0f, 1.0f, 0.5f), 2000.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>("midCross", "Mid Crossover", juce::NormalisableRange<float>(250.0f, 20000.0f, 1.0f, 0.3f), 2500.0f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>("lowVol", "Low Volume", juce::NormalisableRange<float>(-60.0f, 12.0f, 0.1f), 0.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>("midVol", "Mid Volume", juce::NormalisableRange<float>(-60.0f, 12.0f, 0.1f), 0.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>("highVol", "High Volume", juce::NormalisableRange<float>(-60.0f, 12.0f, 0.1f), 0.0f));
 
     return {params.begin(), params.end()};
 }
@@ -48,8 +52,12 @@ void MultibandReverbAudioProcessor::prepareToPlay(double sampleRate, int samples
 
     // Prepare crossover filters
     for (auto &crossover : crossovers) {
+        // Configure Linkwitz-Riley filters (4th order, 24 dB/octave)
         crossover.lowpass.prepare(spec);
+        crossover.lowpass.setType(juce::dsp::LinkwitzRileyFilterType::lowpass);
+
         crossover.highpass.prepare(spec);
+        crossover.highpass.setType(juce::dsp::LinkwitzRileyFilterType::highpass);
     }
 
     // Prepare convolution engines
@@ -90,46 +98,69 @@ void MultibandReverbAudioProcessor::processBlock(juce::AudioBuffer<float> &buffe
     juce::dsp::AudioBlock<float> midBlock(midBuffer);
     juce::dsp::AudioBlock<float> highBlock(highBuffer);
 
-    // Process crossovers
+    // Process crossovers and handle solo/mute
     if (crossovers.size() >= 2) {
-        // Split into low and mid-high first
+        // Create processing contexts
+        juce::dsp::AudioBlock<float> inputBlock(buffer);
+
+        // First crossover: split into low and mid-high
+        lowBlock.copyFrom(inputBlock);
+        midBlock.copyFrom(inputBlock);
+
         juce::dsp::ProcessContextReplacing<float> lowContext(lowBlock);
         juce::dsp::ProcessContextReplacing<float> midHighContext(midBlock);
+
         crossovers[0].lowpass.process(lowContext);
         crossovers[0].highpass.process(midHighContext);
 
-        // Copy mid-high into high buffer before second split
-        for (int channel = 0; channel < numChannels; ++channel) {
-            highBuffer.copyFrom(channel, 0, midBuffer, channel, 0, numSamples);
-        }
+        // Second crossover: split mid-high into mid and high
+        highBlock.copyFrom(midBlock);
 
-        // Now split mid-high into mid and high
         juce::dsp::ProcessContextReplacing<float> midContext(midBlock);
         juce::dsp::ProcessContextReplacing<float> highContext(highBlock);
+
         crossovers[1].lowpass.process(midContext);
         crossovers[1].highpass.process(highContext);
     }
 
-    // Process each band through its reverb
+    // Process each band through its reverb and handle solo/mute
+    bool anySoloed = false;
+    for (const auto &reverb : bandReverbs) {
+        if (reverb.isSoloed) {
+            anySoloed = true;
+            break;
+        }
+    }
+
+    // Clear the output buffer before mixing
+    buffer.clear();
+
+    // Mix bands based on solo/mute state
     for (size_t i = 0; i < bandReverbs.size(); ++i) {
         auto &reverb = bandReverbs[i];
-        if (reverb.convolution) {
-            juce::AudioBuffer<float> *bandBuffer = nullptr;
-            switch (i) {
-            case 0:
-                bandBuffer = &lowBuffer;
-                break;
-            case 1:
-                bandBuffer = &midBuffer;
-                break;
-            case 2:
-                bandBuffer = &highBuffer;
-                break;
-            default:
-                break;
-            }
+        juce::AudioBuffer<float> *bandBuffer = nullptr;
 
-            if (bandBuffer != nullptr) {
+        // Skip if muted or if any band is soloed and this one isn't
+        if (reverb.isMuted || (anySoloed && !reverb.isSoloed)) {
+            continue;
+        }
+
+        switch (i) {
+        case 0:
+            bandBuffer = &lowBuffer;
+            break;
+        case 1:
+            bandBuffer = &midBuffer;
+            break;
+        case 2:
+            bandBuffer = &highBuffer;
+            break;
+        default:
+            break;
+        }
+
+        if (bandBuffer != nullptr) {
+            if (reverb.convolution) {
                 // Create wet buffer for reverb
                 juce::AudioBuffer<float> wetBuffer(numChannels, numSamples);
                 for (int channel = 0; channel < numChannels; ++channel) {
@@ -154,22 +185,16 @@ void MultibandReverbAudioProcessor::processBlock(juce::AudioBuffer<float> &buffe
                     }
                 }
             }
-        }
-    }
 
-    // Clear the output buffer before mixing
-    buffer.clear();
+            // Get and apply volume for this band
+            juce::String volParamID = i == 0 ? "lowVol" : (i == 1 ? "midVol" : "highVol");
+            float volumeDb = *parameters.getRawParameterValue(volParamID);
+            float volumeGain = juce::Decibels::decibelsToGain(volumeDb);
 
-    // Mix all bands back together with equal gain
-    const float bandGain = 1.0f / 3.0f; // Normalize the output
-    for (int channel = 0; channel < numChannels; ++channel) {
-        auto *output = buffer.getWritePointer(channel);
-        auto *low = lowBuffer.getReadPointer(channel);
-        auto *mid = midBuffer.getReadPointer(channel);
-        auto *high = highBuffer.getReadPointer(channel);
-
-        for (int sample = 0; sample < numSamples; ++sample) {
-            output[sample] = (low[sample] + mid[sample] + high[sample]) * bandGain;
+            // Add the processed band to the output with volume applied
+            for (int channel = 0; channel < numChannels; ++channel) {
+                buffer.addFrom(channel, 0, *bandBuffer, channel, 0, numSamples, volumeGain);
+            }
         }
     }
 
@@ -262,7 +287,19 @@ void MultibandReverbAudioProcessor::loadImpulseResponse(size_t bandIndex, const 
 void MultibandReverbAudioProcessor::parameterChanged(const juce::String &parameterID, [[maybe_unused]] float newValue) {
     if (parameterID == "lowCross" || parameterID == "midCross") {
         updateCrossoverFrequencies();
+
+        // Update analyzer if it exists
+        if (analyzer != nullptr && lowCrossoverFreq != nullptr && midCrossoverFreq != nullptr) {
+            analyzer->setCrossoverFrequencies(lowCrossoverFreq->load(), midCrossoverFreq->load());
+        }
     }
+}
+
+void MultibandReverbAudioProcessor::updateSoloMuteStates() {
+    // This method can be used to handle any additional logic needed when solo/mute states change
+    // For now, we just trigger a repaint to ensure the UI reflects the current state
+    if (auto *editor = dynamic_cast<AudioProcessorEditor *>(getActiveEditor()))
+        editor->repaint();
 }
 
 juce::AudioProcessor *JUCE_CALLTYPE createPluginFilter() { return new MultibandReverbAudioProcessor(); }
