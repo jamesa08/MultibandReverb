@@ -1,3 +1,7 @@
+#pragma once
+#include <JuceHeader.h>
+
+// SpectrumAnalyzer.h
 class SpectrumAnalyzer : public juce::Component,
                         public juce::Timer
 {
