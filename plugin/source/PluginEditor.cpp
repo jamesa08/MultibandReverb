@@ -16,7 +16,9 @@ MultibandReverbAudioProcessorEditor::MultibandReverbAudioProcessorEditor(
     setSize(WINDOW_W, WINDOW_H);
     setResizable(false, false);
 
-    processorRef.analyzer.store(&analyzer);
+    // NOTE: do NOT store the analyzer pointer yet — the audio thread could
+    // start calling pushInputBuffer immediately, before initialization completes.
+
     analyzer.setProcessor(&processorRef);
     addAndMakeVisible(analyzer);
 
@@ -71,6 +73,10 @@ MultibandReverbAudioProcessorEditor::MultibandReverbAudioProcessorEditor(
 
     // Build the initial band panel layout.
     rebuildBandControls();
+
+    // Now that everything is fully initialized, tell the audio thread
+    // the analyzer is ready. This must be the last thing in the constructor.
+    processorRef.analyzer.store(&analyzer);
 }
 
 MultibandReverbAudioProcessorEditor::~MultibandReverbAudioProcessorEditor() {

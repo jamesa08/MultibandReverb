@@ -34,8 +34,18 @@ static juce::Colour crossoverHandleColour(int crossoverIndex) {
 
 // ---------------------------------------------------------------------------
 SpectrumAnalyzer::SpectrumAnalyzer()
-    : fft(11),
+    : fft(FFT_ORDER),
       window(FFT_SIZE, juce::dsp::WindowingFunction<float>::hann) {
+    // Allocate all large buffers on the heap to avoid Rosetta layout issues.
+    outFifo   .assign(FFT_SIZE, 0.0f);
+    outFftData.assign(FFT_SIZE, 0.0f);
+    outIn     .assign(FFT_SIZE, 0.0f);
+    outDisp   .assign(FFT_SIZE, 0.0f);
+    inFifo    .assign(FFT_SIZE, 0.0f);
+    inFftData .assign(FFT_SIZE, 0.0f);
+    inIn      .assign(FFT_SIZE, 0.0f);
+    inDisp    .assign(FFT_SIZE, 0.0f);
+    historyFrames.assign(HISTORY_FRAMES, std::vector<float>(FFT_SIZE, 0.0f));
     startTimerHz(60);
     setOpaque(true);
 }
@@ -66,7 +76,7 @@ int SpectrumAnalyzer::hitTestCrossover(float x) const {
 }
 
 // Catmull-Rom cubic interpolation between FFT bins for smooth display.
-float SpectrumAnalyzer::getBinValue(const std::array<float, FFT_SIZE> &data, float freq) const {
+float SpectrumAnalyzer::getBinValue(const std::vector<float> &data, float freq) const {
     const float exact = freq * FFT_SIZE / static_cast<float>(sampleRate);
     const int   b0    = juce::jlimit(0, FFT_SIZE / 2 - 1, static_cast<int>(exact));
     const int   b1    = juce::jmin(b0 + 1, FFT_SIZE / 2 - 1);
