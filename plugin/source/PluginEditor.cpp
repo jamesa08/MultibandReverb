@@ -31,17 +31,17 @@ MultibandReverbAudioProcessorEditor::MultibandReverbAudioProcessorEditor(
     addBandButton.setTooltip("Add band");
     addBandButton.onClick = [this] { onAddBand(); };
 
-    // Speed slider: controls FFT smoothing time constant in milliseconds.
-    // Lower ms = faster/rawer. Higher ms = slower/smoother.
+    // Speed slider: controls dB decay per timer tick.
+    // Lower = slower fall (smoother), higher = faster fall (snappier).
     addAndMakeVisible(smoothingSlider);
     addAndMakeVisible(smoothingLabel);
     smoothingSlider.setSliderStyle(juce::Slider::LinearHorizontal);
     smoothingSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-    smoothingSlider.setRange(20.0, 600.0, 10.0);
-    smoothingSlider.setValue(150.0, juce::dontSendNotification);
-    smoothingSlider.setTooltip("Speed: left = faster/rawer (20ms), right = slower/smoother (600ms)");
+    smoothingSlider.setRange(0.2, 8.0, 0.1);
+    smoothingSlider.setValue(1.5, juce::dontSendNotification);
+    smoothingSlider.setTooltip("Speed: left = slow decay, right = fast decay");
     smoothingSlider.onValueChange = [this] {
-        analyzer.setSmoothingTime(static_cast<float>(smoothingSlider.getValue()));
+        analyzer.setDecayRate(static_cast<float>(smoothingSlider.getValue()));
     };
     smoothingLabel.setText("Speed", juce::dontSendNotification);
     smoothingLabel.setFont(juce::Font(juce::FontOptions(10.0f)));
@@ -74,6 +74,9 @@ MultibandReverbAudioProcessorEditor::MultibandReverbAudioProcessorEditor(
 }
 
 MultibandReverbAudioProcessorEditor::~MultibandReverbAudioProcessorEditor() {
+    // Acquire the lock so we know the audio thread is not mid-call into
+    // the analyzer before we null the pointer and let the object be destroyed.
+    juce::SpinLock::ScopedLockType lock(processorRef.analyzerLock);
     processorRef.analyzer.store(nullptr);
     processorRef.onBandLayoutChanged = nullptr;
 }

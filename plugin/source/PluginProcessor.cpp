@@ -148,17 +148,22 @@ void MultibandReverbAudioProcessor::processBlock(juce::AudioBuffer<float> &buffe
     const int numBands    = numActiveBands;
 
     // Push the pre-processing signal to the analyzer's input pipeline.
-    if (auto *analyzerPtr = analyzer.load()) {
-        std::vector<float> inputMono(static_cast<size_t>(numSamples));
-        const float *ch0 = buffer.getReadPointer(0);
-        if (numChannels > 1) {
-            const float *ch1 = buffer.getReadPointer(1);
-            for (int s = 0; s < numSamples; ++s)
-                inputMono[static_cast<size_t>(s)] = (ch0[s] + ch1[s]) * 0.5f;
-        } else {
-            std::memcpy(inputMono.data(), ch0, static_cast<size_t>(numSamples) * sizeof(float));
+    {
+        juce::SpinLock::ScopedTryLockType lock(analyzerLock);
+        if (lock.isLocked()) {
+            if (auto *analyzerPtr = analyzer.load()) {
+                std::vector<float> inputMono(static_cast<size_t>(numSamples));
+                const float *ch0 = buffer.getReadPointer(0);
+                if (numChannels > 1) {
+                    const float *ch1 = buffer.getReadPointer(1);
+                    for (int s = 0; s < numSamples; ++s)
+                        inputMono[static_cast<size_t>(s)] = (ch0[s] + ch1[s]) * 0.5f;
+                } else {
+                    std::memcpy(inputMono.data(), ch0, static_cast<size_t>(numSamples) * sizeof(float));
+                }
+                analyzerPtr->pushInputBuffer(inputMono.data(), numSamples);
+            }
         }
-        analyzerPtr->pushInputBuffer(inputMono.data(), numSamples);
     }
 
     // Allocate per-band buffers.
@@ -240,17 +245,22 @@ void MultibandReverbAudioProcessor::processBlock(juce::AudioBuffer<float> &buffe
     }
 
     // Feed output to spectrum analyzer.
-    if (auto *analyzerPtr = analyzer.load()) {
-        std::vector<float> analysisBuf(static_cast<size_t>(numSamples));
-        const float *ch0 = buffer.getReadPointer(0);
-        if (numChannels > 1) {
-            const float *ch1 = buffer.getReadPointer(1);
-            for (int s = 0; s < numSamples; ++s)
-                analysisBuf[static_cast<size_t>(s)] = (ch0[s] + ch1[s]) * 0.5f;
-        } else {
-            std::memcpy(analysisBuf.data(), ch0, static_cast<size_t>(numSamples) * sizeof(float));
+    {
+        juce::SpinLock::ScopedTryLockType lock(analyzerLock);
+        if (lock.isLocked()) {
+            if (auto *analyzerPtr = analyzer.load()) {
+                std::vector<float> analysisBuf(static_cast<size_t>(numSamples));
+                const float *ch0 = buffer.getReadPointer(0);
+                if (numChannels > 1) {
+                    const float *ch1 = buffer.getReadPointer(1);
+                    for (int s = 0; s < numSamples; ++s)
+                        analysisBuf[static_cast<size_t>(s)] = (ch0[s] + ch1[s]) * 0.5f;
+                } else {
+                    std::memcpy(analysisBuf.data(), ch0, static_cast<size_t>(numSamples) * sizeof(float));
+                }
+                analyzerPtr->pushBuffer(analysisBuf.data(), numSamples);
+            }
         }
-        analyzerPtr->pushBuffer(analysisBuf.data(), numSamples);
     }
 }
 

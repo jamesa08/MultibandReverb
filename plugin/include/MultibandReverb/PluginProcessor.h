@@ -21,6 +21,7 @@ class MultibandReverbAudioProcessor : public juce::AudioProcessor,
     void processBlock(juce::AudioBuffer<float> &, juce::MidiBuffer &) override;
 
     std::atomic<SpectrumAnalyzer *> analyzer { nullptr };
+    juce::SpinLock analyzerLock; // held briefly when accessing analyzer pointer
 
     juce::AudioProcessorEditor *createEditor() override;
     bool hasEditor() const override { return true; }

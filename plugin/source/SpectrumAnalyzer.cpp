@@ -253,7 +253,7 @@ void SpectrumAnalyzer::paint(juce::Graphics &g) {
         inPath.startNewSubPath(0.0f, fh);
         for (int px = 0; px < w; ++px) {
             const float freq  = getFrequencyForX(static_cast<float>(px));
-            const float level = getBinValue(inSmoothed, freq);
+            const float level = getBinValue(inDisp, freq);
             const float db    = juce::Decibels::gainToDecibels(level, SPEC_MIN_DB);
             const float norm  = juce::jmap(db, SPEC_MIN_DB, SPEC_MAX_DB, 0.0f, 0.72f);
             inPath.lineTo(static_cast<float>(px), fh * (1.0f - norm));
@@ -285,7 +285,7 @@ void SpectrumAnalyzer::paint(juce::Graphics &g) {
         outEdge.reserve(static_cast<size_t>(w));
         for (int px = 0; px < w; ++px) {
             const float freq  = getFrequencyForX(static_cast<float>(px));
-            const float level = getBinValue(outSmoothed, freq);
+            const float level = getBinValue(outDisp, freq);
             const float db    = juce::Decibels::gainToDecibels(level, SPEC_MIN_DB);
             const float norm  = juce::jmap(db, SPEC_MIN_DB, SPEC_MAX_DB, 0.0f, 0.72f);
             outEdge.push_back({ static_cast<float>(px), fh * (1.0f - norm) });
@@ -356,7 +356,7 @@ void SpectrumAnalyzer::paint(juce::Graphics &g) {
                 const int gx = rng.nextInt(w);
                 const int gy = rng.nextInt(h);
                 const float freq  = getFrequencyForX(static_cast<float>(gx));
-                const float level = getBinValue(outSmoothed, freq);
+                const float level = getBinValue(outDisp, freq);
                 const float db    = juce::Decibels::gainToDecibels(level, SPEC_MIN_DB);
                 const float norm  = juce::jmap(db, SPEC_MIN_DB, SPEC_MAX_DB, 0.0f, 0.72f);
                 const float topY  = fh * (1.0f - norm);
@@ -597,17 +597,16 @@ int SpectrumAnalyzer::hitTestVolumeLine(float mx, float my) const {
 void SpectrumAnalyzer::timerCallback() {
     bool needRepaint = false;
 
-    // Process output FFT.
+    // Process output FFT: compute magnitude, store in outIn.
     if (outFftReady) {
         window.multiplyWithWindowingTable(outFftData.data(), FFT_SIZE);
         fft.performFrequencyOnlyForwardTransform(outFftData.data());
 
-        for (size_t i = 0; i < outFftData.size(); ++i)
-            outSmoothed[i] = outSmoothed[i] * lambda
-                           + outFftData[i] * (1.0f - lambda);
+        for (size_t i = 0; i < FFT_SIZE / 2; ++i)
+            outIn[i] = outFftData[i];
 
-        // Push current smoothed frame into history ring buffer.
-        historyFrames[static_cast<size_t>(historyHead)] = outSmoothed;
+        // Push raw frame into history ring buffer for ghost trails.
+        historyFrames[static_cast<size_t>(historyHead)] = outIn;
         historyHead  = (historyHead + 1) % HISTORY_FRAMES;
         historyCount = juce::jmin(historyCount + 1, HISTORY_FRAMES);
 
@@ -620,12 +619,21 @@ void SpectrumAnalyzer::timerCallback() {
         window.multiplyWithWindowingTable(inFftData.data(), FFT_SIZE);
         fft.performFrequencyOnlyForwardTransform(inFftData.data());
 
-        for (size_t i = 0; i < inFftData.size(); ++i)
-            inSmoothed[i] = inSmoothed[i] * lambda
-                          + inFftData[i] * (1.0f - lambda);
+        for (size_t i = 0; i < FFT_SIZE / 2; ++i)
+            inIn[i] = inFftData[i];
 
         inFftReady  = false;
         needRepaint = true;
+    }
+
+    // Decay display arrays toward the current raw values.
+    // outDisp can only fall by decayDbPerTick dB per tick, never below outIn.
+    // This is the GMPI approach: dbs_disp[i] = max(dbs_in[i], dbs_disp[i] - dbDecay)
+    // We work in gain domain: convert decay to a gain multiplier.
+    const float decayGainMult = juce::Decibels::decibelsToGain(-decayDbPerTick);
+    for (size_t i = 0; i < FFT_SIZE / 2; ++i) {
+        outDisp[i] = std::max(outIn[i],  outDisp[i] * decayGainMult);
+        inDisp[i]  = std::max(inIn[i],   inDisp[i]  * decayGainMult);
     }
 
     if (needRepaint) repaint();
