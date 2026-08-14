@@ -209,88 +209,28 @@ void SpectrumAnalyzer::paint(juce::Graphics &g) {
     }
 
     // =========================================================
-    // Ghost trail: older output frames, falling and fading
-    // =========================================================
-    // We draw oldest-first (so newest paints on top).
-    // historyHead points to the NEXT write slot, so the most recent
-    // valid frame is at (historyHead - 1 + HISTORY_FRAMES) % HISTORY_FRAMES.
-    {
-        const int validFrames = juce::jmin(historyCount, HISTORY_FRAMES);
-        for (int age = validFrames - 1; age >= 1; --age) {
-            const int slot = (historyHead - 1 - age + HISTORY_FRAMES * 2) % HISTORY_FRAMES;
-            const auto &frame = historyFrames[static_cast<size_t>(slot)];
-
-            // Older = lower alpha, shifted down more, stroke slightly wider (faux blur).
-            const float alpha  = std::pow(HISTORY_FADE, static_cast<float>(age));
-            const float dropY  = static_cast<float>(age * HISTORY_DROP);
-            const float strokeW = 0.8f + static_cast<float>(age) * 0.18f;
-
-            // Build a clipping path so the ghost fades to nothing at the bottom.
-            // We tint each pixel column with the band colour.
-            juce::Path ghostPath;
-            bool started = false;
-
-            for (int px = 0; px < w; px += 2) {
-                const float freq  = getFrequencyForX(static_cast<float>(px));
-                const float level = getBinValue(frame, freq);
-                const float db    = juce::Decibels::gainToDecibels(level, SPEC_MIN_DB);
-                const float norm  = juce::jmap(db, SPEC_MIN_DB, SPEC_MAX_DB, 0.0f, 0.72f);
-                const float y     = fh * (1.0f - norm) + dropY;
-
-                if (!started) { ghostPath.startNewSubPath(static_cast<float>(px), y); started = true; }
-                else          { ghostPath.lineTo(static_cast<float>(px), y); }
-            }
-
-            // Draw as a single translucent white stroke (colour comes from fill below).
-            g.setColour(juce::Colours::white.withAlpha(alpha * 0.35f));
-            g.strokePath(ghostPath, juce::PathStrokeType(strokeW));
-
-            // Add a grain dot pass at the ghost's opacity for texture.
-            {
-                juce::Random rng(static_cast<juce::int64>(age * 1337));
-                g.setColour(juce::Colours::white.withAlpha(alpha * 0.012f));
-                for (int i = 0; i < (w * h) / 200; ++i)
-                    g.fillRect(rng.nextInt(w), rng.nextInt(h), 1, 1);
-            }
-        }
-    }
-
-    // =========================================================
-    // Input (dry) spectrum: dim blue, subtle, behind output
+    // Input (dry) spectrum: faint line only, drawn behind everything
     // =========================================================
     {
         juce::Path inPath;
-        inPath.startNewSubPath(0.0f, fh);
+        bool inStarted = false;
         for (int px = 0; px < w; ++px) {
             const float freq  = getFrequencyForX(static_cast<float>(px));
             const float level = getBinValue(inDisp, freq);
             const float db    = juce::Decibels::gainToDecibels(level, SPEC_MIN_DB);
             const float norm  = juce::jmap(db, SPEC_MIN_DB, SPEC_MAX_DB, 0.0f, 0.72f);
-            inPath.lineTo(static_cast<float>(px), fh * (1.0f - norm));
+            const float y     = fh * (1.0f - norm);
+            if (!inStarted) { inPath.startNewSubPath(static_cast<float>(px), y); inStarted = true; }
+            else            { inPath.lineTo(static_cast<float>(px), y); }
         }
-        inPath.lineTo(fw, fh);
-        inPath.closeSubPath();
-
-        // Very dim fill and faint stroke — this reads as "before".
-        g.setColour(juce::Colour(0xff1a3a5a).withAlpha(0.35f));
-        g.fillPath(inPath);
-        g.setColour(juce::Colour(0xff4a7aaa).withAlpha(0.4f));
-        g.strokePath(inPath, juce::PathStrokeType(0.8f));
+        g.setColour(juce::Colour(0xff4a7aaa).withAlpha(0.30f));
+        g.strokePath(inPath, juce::PathStrokeType(1.0f));
     }
 
     // =========================================================
-    // Output (wet) spectrum: per-band coloured, bright, on top
+    // Output (wet) spectrum: per-band coloured fill
     // =========================================================
     {
-        // We draw the output spectrum as a series of per-pixel vertical slices
-        // coloured by band, then stroke the top edge separately per segment.
-        // For efficiency we batch consecutive pixels of the same colour into paths.
-
-        // First pass: build one big filled path using gradient fill per segment.
-        // Simple approach: draw the whole filled path in white, then tint with
-        // a per-band horizontal gradient. This avoids N separate path builds.
-
-        // Build the top-edge polyline for the output spectrum.
         std::vector<juce::Point<float>> outEdge;
         outEdge.reserve(static_cast<size_t>(w));
         for (int px = 0; px < w; ++px) {
@@ -301,34 +241,18 @@ void SpectrumAnalyzer::paint(juce::Graphics &g) {
             outEdge.push_back({ static_cast<float>(px), fh * (1.0f - norm) });
         }
 
-        // Draw per-band coloured segments.
-        // For each band, clip horizontally to its frequency range and draw
-        // the filled path in that band's colour. Blending at crossovers is
-        // handled by the colour interpolation in getBandColourForFrequency.
         const int numBands = static_cast<int>(bandBounds.size()) - 1;
-
-        // Draw each band's filled region separately with its gradient.
         for (int band = 0; band < numBands; ++band) {
             const float leftFreq  = bandBounds[static_cast<size_t>(band)];
             const float rightFreq = bandBounds[static_cast<size_t>(band + 1)];
-
-            // Extend slightly past crossover for smooth overlap blending.
-            const float drawLeftFreq  = (band == 0) ? 20.0f
-                : leftFreq / std::exp2(TRANS_OCTAVES * 0.3f);
-            const float drawRightFreq = (band == numBands - 1) ? 20000.0f
-                : rightFreq * std::exp2(TRANS_OCTAVES * 0.3f);
-
-            const float x0 = getXForFrequency(drawLeftFreq);
-            const float x1 = getXForFrequency(drawRightFreq);
+            const float drawLeftFreq  = (band == 0) ? 20.0f : leftFreq / std::exp2(TRANS_OCTAVES * 0.3f);
+            const float drawRightFreq = (band == numBands - 1) ? 20000.0f : rightFreq * std::exp2(TRANS_OCTAVES * 0.3f);
+            const int pxStart = juce::jmax(0, static_cast<int>(getXForFrequency(drawLeftFreq)));
+            const int pxEnd   = juce::jmin(w - 1, static_cast<int>(getXForFrequency(drawRightFreq)));
+            if (pxStart >= pxEnd) continue;
 
             const juce::Colour col     = BAND_COLOURS[static_cast<size_t>(band) % 8];
             const juce::Colour colNext = BAND_COLOURS[static_cast<size_t>(band + 1) % 8];
-
-            // Build path clipped to [x0, x1].
-            const int pxStart = juce::jmax(0, static_cast<int>(x0));
-            const int pxEnd   = juce::jmin(w - 1, static_cast<int>(x1));
-
-            if (pxStart >= pxEnd) continue;
 
             juce::Path seg;
             seg.startNewSubPath(static_cast<float>(pxStart), fh);
@@ -337,7 +261,6 @@ void SpectrumAnalyzer::paint(juce::Graphics &g) {
             seg.lineTo(static_cast<float>(pxEnd), fh);
             seg.closeSubPath();
 
-            // Gradient from this band's colour (left) to next (right) for smooth blend.
             juce::ColourGradient hGrad(
                 col.withAlpha(0.55f),     static_cast<float>(pxStart), 0.0f,
                 (band == numBands - 1 ? col : colNext).withAlpha(0.45f),
@@ -346,20 +269,16 @@ void SpectrumAnalyzer::paint(juce::Graphics &g) {
             g.fillPath(seg);
         }
 
-        // Single bright stroke on top edge of output, per-band coloured.
-        // We draw short line segments coloured by frequency.
+        // Bright stroke on top edge.
         for (int px = 1; px < w; ++px) {
             const float freq = getFrequencyForX(static_cast<float>(px));
             const juce::Colour col = getBandColourForFrequency(freq, bandBounds);
             g.setColour(col.withAlpha(0.9f));
-            g.drawLine(outEdge[static_cast<size_t>(px - 1)].x,
-                       outEdge[static_cast<size_t>(px - 1)].y,
-                       outEdge[static_cast<size_t>(px)].x,
-                       outEdge[static_cast<size_t>(px)].y,
-                       1.6f);
+            g.drawLine(outEdge[static_cast<size_t>(px - 1)].x, outEdge[static_cast<size_t>(px - 1)].y,
+                       outEdge[static_cast<size_t>(px)].x,     outEdge[static_cast<size_t>(px)].y, 1.6f);
         }
 
-        // Grain texture inside the output spectrum fill.
+        // Grain texture inside the fill.
         {
             juce::Random rng(99);
             for (int i = 0; i < (w * h) / 60; ++i) {
@@ -372,10 +291,78 @@ void SpectrumAnalyzer::paint(juce::Graphics &g) {
                 const float topY  = fh * (1.0f - norm);
                 if (static_cast<float>(gy) > topY) {
                     const juce::Colour col = getBandColourForFrequency(freq, bandBounds);
-                    // Fade grain toward the bottom.
-                    const float fade = juce::jmap(static_cast<float>(gy),
-                                                  topY, fh, 0.07f, 0.0f);
+                    const float fade = juce::jmap(static_cast<float>(gy), topY, fh, 0.07f, 0.0f);
                     g.setColour(col.withAlpha(fade));
+                    g.fillRect(gx, gy, 1, 1);
+                }
+            }
+        }
+    }
+
+    // =========================================================
+    // Ghost trail: decay lines drawn ON TOP of the output fill
+    // =========================================================
+    {
+        const int validFrames = juce::jmin(historyCount, HISTORY_FRAMES);
+
+        // Grain density scales inversely with decay rate: slower decay = more grain.
+        // At decayDbPerTick = 0.2 (slowest) we get heavy grain; at 8.0 (fastest) almost none.
+        const float grainScale = juce::jmap(decayDbPerTick, 0.2f, 8.0f, 1.0f, 0.0f);
+
+        for (int age = validFrames - 1; age >= 1; --age) {
+            const int slot = (historyHead - 1 - age + HISTORY_FRAMES * 2) % HISTORY_FRAMES;
+            const auto &frame = historyFrames[static_cast<size_t>(slot)];
+
+            const float alpha   = std::pow(HISTORY_FADE, static_cast<float>(age));
+            const float dropY   = static_cast<float>(age * HISTORY_DROP);
+            const float strokeW = 0.8f + static_cast<float>(age) * 0.22f;
+
+            // Build stroke path for this ghost frame.
+            juce::Path ghostPath;
+            bool started = false;
+            for (int px = 0; px < w; px += 2) {
+                const float freq  = getFrequencyForX(static_cast<float>(px));
+                const float level = getBinValue(frame, freq);
+                const float db    = juce::Decibels::gainToDecibels(level, SPEC_MIN_DB);
+                const float norm  = juce::jmap(db, SPEC_MIN_DB, SPEC_MAX_DB, 0.0f, 0.72f);
+                const float y     = fh * (1.0f - norm) + dropY;
+                if (!started) { ghostPath.startNewSubPath(static_cast<float>(px), y); started = true; }
+                else          { ghostPath.lineTo(static_cast<float>(px), y); }
+            }
+            g.setColour(juce::Colours::white.withAlpha(alpha * 0.35f));
+            g.strokePath(ghostPath, juce::PathStrokeType(strokeW));
+
+            // Grain pass: denser when decay is slow, spread across the ghost area.
+            // At slowest speed (decayDbPerTick=0.2) we get heavy grain; fastest gets none.
+            const int grainDots = static_cast<int>(
+                static_cast<float>(w * h) / 40.0f
+                * grainScale
+                * (static_cast<float>(age) / static_cast<float>(validFrames)));
+
+            if (grainDots > 0) {
+                juce::Random rng(static_cast<juce::int64>(age * 1337 + historyHead));
+
+                for (int i = 0; i < grainDots; ++i) {
+                    const int gx = rng.nextInt(w);
+
+                    // Sample the ghost line height at this x position.
+                    const float freq   = getFrequencyForX(static_cast<float>(gx));
+                    const float level  = getBinValue(frame, freq);
+                    const float db     = juce::Decibels::gainToDecibels(level, SPEC_MIN_DB);
+                    const float norm   = juce::jmap(db, SPEC_MIN_DB, SPEC_MAX_DB, 0.0f, 0.72f);
+                    const float lineY  = fh * (1.0f - norm) + dropY;
+
+                    // Place grain randomly below the ghost line (inside the filled area).
+                    const float maxGrainY = juce::jmin(fh, lineY + 60.0f);
+                    if (maxGrainY <= lineY) continue;
+                    const int gy = static_cast<int>(lineY)
+                                 + rng.nextInt(static_cast<int>(maxGrainY - lineY) + 1);
+
+                    const juce::Colour col = getBandColourForFrequency(freq, bandBounds);
+                    // Fade grain away from the line.
+                    const float dist = static_cast<float>(gy) - lineY;
+                    const float fade = juce::jmap(dist, 0.0f, maxGrainY - lineY, 1.0f, 0.0f);
+                    g.setColour(col.withAlpha(alpha * grainScale * 0.25f * fade));
                     g.fillRect(gx, gy, 1, 1);
                 }
             }
@@ -616,7 +603,7 @@ void SpectrumAnalyzer::timerCallback() {
             outIn[i] = outFftData[i];
 
         // Push raw frame into history ring buffer for ghost trails.
-        historyFrames[static_cast<size_t>(historyHead)] = outIn;
+        historyFrames[static_cast<size_t>(historyHead)] = outDisp;
         historyHead  = (historyHead + 1) % HISTORY_FRAMES;
         historyCount = juce::jmin(historyCount + 1, HISTORY_FRAMES);
 

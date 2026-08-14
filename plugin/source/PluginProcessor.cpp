@@ -220,22 +220,25 @@ void MultibandReverbAudioProcessor::processBlock(juce::AudioBuffer<float> &buffe
         auto &reverb   = bandReverbs[i];
         const float mix = juce::jlimit(0.0f, 1.0f, bandMix[i]->load() / 100.0f);
 
-        // Wet path through convolution.
-        juce::AudioBuffer<float> wetBuf(numChannels, numSamples);
-        for (int ch = 0; ch < numChannels; ++ch)
-            wetBuf.copyFrom(ch, 0, bandBuf, ch, 0, numSamples);
+        // Wet path through convolution — only if an IR has been loaded.
+        // Without an IR the convolution output is silence/noise, so pass dry through.
+        if (reverb.irName.isNotEmpty()) {
+            juce::AudioBuffer<float> wetBuf(numChannels, numSamples);
+            for (int ch = 0; ch < numChannels; ++ch)
+                wetBuf.copyFrom(ch, 0, bandBuf, ch, 0, numSamples);
 
-        juce::dsp::AudioBlock<float> wetBlock(wetBuf);
-        juce::dsp::ProcessContextReplacing<float> wetCtx(wetBlock);
-        reverb.convolution->process(wetCtx);
+            juce::dsp::AudioBlock<float> wetBlock(wetBuf);
+            juce::dsp::ProcessContextReplacing<float> wetCtx(wetBlock);
+            reverb.convolution->process(wetCtx);
 
-        // Mix dry + wet in place.
-        const float dryGain = 1.0f - mix;
-        for (int ch = 0; ch < numChannels; ++ch) {
-            auto *dry = bandBuf.getWritePointer(ch);
-            const auto *wet = wetBuf.getReadPointer(ch);
-            for (int s = 0; s < numSamples; ++s)
-                dry[s] = dry[s] * dryGain + wet[s] * mix;
+            // Mix dry + wet in place.
+            const float dryGain = 1.0f - mix;
+            for (int ch = 0; ch < numChannels; ++ch) {
+                auto *dry = bandBuf.getWritePointer(ch);
+                const auto *wet = wetBuf.getReadPointer(ch);
+                for (int s = 0; s < numSamples; ++s)
+                    dry[s] = dry[s] * dryGain + wet[s] * mix;
+            }
         }
 
         // Apply band volume and sum into output.
@@ -308,10 +311,15 @@ void MultibandReverbAudioProcessor::removeBand(int bandIndex) {
         crossoverFrequencies.erase(crossoverFrequencies.begin() + crossIdx);
     }
 
-    // Shift band data (convolution state) down so there are no gaps.
-    for (int i = bandIndex; i < numActiveBands - 1; ++i)
+    // Shift band data (convolution state and IR name) down so there are no gaps.
+    for (int i = bandIndex; i < numActiveBands - 1; ++i) {
         bandReverbs[static_cast<size_t>(i)].convolution.swap(
             bandReverbs[static_cast<size_t>(i + 1)].convolution);
+        bandReverbs[static_cast<size_t>(i)].irName =
+            bandReverbs[static_cast<size_t>(i + 1)].irName;
+    }
+    // Clear the now-vacated last slot.
+    bandReverbs[static_cast<size_t>(numActiveBands - 1)].irName = {};
 
     --numActiveBands;
 

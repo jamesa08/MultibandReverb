@@ -40,11 +40,12 @@ MultibandReverbAudioProcessorEditor::MultibandReverbAudioProcessorEditor(
     smoothingSlider.setSliderStyle(juce::Slider::LinearHorizontal);
     smoothingSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
     smoothingSlider.setRange(0.2, 8.0, 0.1);
-    smoothingSlider.setValue(1.5, juce::dontSendNotification);
+    smoothingSlider.setValue(0.2, juce::dontSendNotification);
     smoothingSlider.setTooltip("Speed: left = slow decay, right = fast decay");
     smoothingSlider.onValueChange = [this] {
         analyzer.setDecayRate(static_cast<float>(smoothingSlider.getValue()));
     };
+    analyzer.setDecayRate(0.2f); // apply default immediately
     smoothingLabel.setText("Speed", juce::dontSendNotification);
     smoothingLabel.setFont(juce::Font(juce::FontOptions(10.0f)));
     smoothingLabel.setColour(juce::Label::textColourId,
