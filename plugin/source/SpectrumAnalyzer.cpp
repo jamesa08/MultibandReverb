@@ -1,5 +1,6 @@
 #include "MultibandReverb/SpectrumAnalyzer.h"
 #include "MultibandReverb/PluginProcessor.h"
+#include "MultibandReverb/StackBlur.h"
 
 // ---------------------------------------------------------------------------
 // Shared visual constants (must match across paint / hit test / drag).
@@ -46,6 +47,7 @@ SpectrumAnalyzer::SpectrumAnalyzer()
     inIn      .assign(FFT_SIZE, 0.0f);
     inDisp    .assign(FFT_SIZE, 0.0f);
     historyFrames.assign(HISTORY_FRAMES, std::vector<float>(FFT_SIZE, 0.0f));
+    ghostImages.resize(HISTORY_FRAMES); // allocated lazily when first rendered
     startTimerHz(60);
     setOpaque(true);
 }
@@ -300,70 +302,166 @@ void SpectrumAnalyzer::paint(juce::Graphics &g) {
     }
 
     // =========================================================
-    // Ghost trail: decay lines drawn ON TOP of the output fill
+    // Ghost trail: use pre-blurred cached images, rebuilt only
+    // when a new FFT frame arrives (not every paint call).
     // =========================================================
     {
         const int validFrames = juce::jmin(historyCount, HISTORY_FRAMES);
+        const float maxBlurRadius = juce::jmap(decayDbPerTick, 0.2f, 8.0f, 16.0f, 2.0f);
+        const float grainScale    = juce::jmap(decayDbPerTick, 0.2f, 8.0f, 1.0f, 0.05f);
 
-        // Grain density scales inversely with decay rate: slower decay = more grain.
-        // At decayDbPerTick = 0.2 (slowest) we get heavy grain; at 8.0 (fastest) almost none.
-        const float grainScale = juce::jmap(decayDbPerTick, 0.2f, 8.0f, 1.0f, 0.0f);
+        // Rebuild cached ghost images only when the FFT data changed.
+        if (ghostImagesDirty && validFrames >= 1) {
+            for (int age = 1; age < validFrames; ++age) {
+                const int slot = (historyHead - 1 - age + HISTORY_FRAMES * 2) % HISTORY_FRAMES;
+                const auto &frame = historyFrames[static_cast<size_t>(slot)];
+                const float ageFrac = static_cast<float>(age) / static_cast<float>(validFrames);
+                const int blurRadius = juce::jmax(2, static_cast<int>(maxBlurRadius * ageFrac));
+                const float dropY    = static_cast<float>(age * HISTORY_DROP);
 
-        for (int age = validFrames - 1; age >= 1; --age) {
-            const int slot = (historyHead - 1 - age + HISTORY_FRAMES * 2) % HISTORY_FRAMES;
-            const auto &frame = historyFrames[static_cast<size_t>(slot)];
+                juce::Image& img = ghostImages[static_cast<size_t>(slot)];
+                // Reuse existing image if size matches, otherwise allocate.
+                if (img.getWidth() != w || img.getHeight() != h)
+                    img = juce::Image(juce::Image::ARGB, w, h, true);
+                else
+                    img.clear(img.getBounds()); // clear to transparent
 
-            const float alpha   = std::pow(HISTORY_FADE, static_cast<float>(age));
-            const float dropY   = static_cast<float>(age * HISTORY_DROP);
-            const float strokeW = 0.8f + static_cast<float>(age) * 0.22f;
+                {
+                    juce::Graphics gi(img);
 
-            // Build stroke path for this ghost frame.
-            juce::Path ghostPath;
-            bool started = false;
-            for (int px = 0; px < w; px += 2) {
-                const float freq  = getFrequencyForX(static_cast<float>(px));
-                const float level = getBinValue(frame, freq);
-                const float db    = juce::Decibels::gainToDecibels(level, SPEC_MIN_DB);
-                const float norm  = juce::jmap(db, SPEC_MIN_DB, SPEC_MAX_DB, 0.0f, 0.72f);
-                const float y     = fh * (1.0f - norm) + dropY;
-                if (!started) { ghostPath.startNewSubPath(static_cast<float>(px), y); started = true; }
-                else          { ghostPath.lineTo(static_cast<float>(px), y); }
+                    // Spectrum line.
+                    juce::Path ghostPath;
+                    bool started = false;
+                    for (int px = 0; px < w; px += 2) {
+                        const float freq  = getFrequencyForX(static_cast<float>(px));
+                        const float level = getBinValue(frame, freq);
+                        const float db    = juce::Decibels::gainToDecibels(level, SPEC_MIN_DB);
+                        const float norm  = juce::jmap(db, SPEC_MIN_DB, SPEC_MAX_DB, 0.0f, 0.72f);
+                        const float y     = fh * (1.0f - norm) + dropY;
+                        if (!started) { ghostPath.startNewSubPath(static_cast<float>(px), y); started = true; }
+                        else          { ghostPath.lineTo(static_cast<float>(px), y); }
+                    }
+                    gi.setColour(juce::Colours::white.withAlpha(0.9f));
+                    gi.strokePath(ghostPath, juce::PathStrokeType(1.5f + ageFrac * 1.5f));
+
+                    // Grain with fixed seed per slot — only changes when history updates.
+                    const int grainDots = static_cast<int>(
+                        static_cast<float>(w * h) / 25.0f * grainScale * ageFrac);
+                    if (grainDots > 0) {
+                        juce::Random rng(static_cast<juce::int64>(slot * 9973 + historyCount));
+                        for (int i = 0; i < grainDots; ++i) {
+                            const int gx = rng.nextInt(w);
+                            const float freq   = getFrequencyForX(static_cast<float>(gx));
+                            const float level  = getBinValue(frame, freq);
+                            const float db     = juce::Decibels::gainToDecibels(level, SPEC_MIN_DB);
+                            const float norm   = juce::jmap(db, SPEC_MIN_DB, SPEC_MAX_DB, 0.0f, 0.72f);
+                            const float lineY  = fh * (1.0f - norm) + dropY;
+                            const float spread = 80.0f + ageFrac * 60.0f;
+                            const float maxY   = juce::jmin(fh, lineY + spread);
+                            if (maxY <= lineY) continue;
+                            const int gy = static_cast<int>(lineY)
+                                         + rng.nextInt(static_cast<int>(maxY - lineY) + 1);
+                            const juce::Colour col = getBandColourForFrequency(freq, bandBounds);
+                            const float dist = static_cast<float>(gy) - lineY;
+                            const float fade = juce::jmap(dist, 0.0f, maxY - lineY, 1.0f, 0.0f);
+                            const int sz = (i % 4 == 0) ? 3 : (i % 4 == 1) ? 1 : 2;
+                            gi.setColour(col.withAlpha(0.85f * fade));
+                            gi.fillRect(gx, gy, sz, sz);
+                        }
+                    }
+                }
+
+                // Apply Stack Blur once per new frame, not every paint.
+                applyStackBlur(img, blurRadius);
             }
-            g.setColour(juce::Colours::white.withAlpha(alpha * 0.35f));
-            g.strokePath(ghostPath, juce::PathStrokeType(strokeW));
+            ghostImagesDirty = false;
+        }
 
-            // Grain pass: denser when decay is slow, spread across the ghost area.
-            // At slowest speed (decayDbPerTick=0.2) we get heavy grain; fastest gets none.
-            const int grainDots = static_cast<int>(
-                static_cast<float>(w * h) / 40.0f
-                * grainScale
-                * (static_cast<float>(age) / static_cast<float>(validFrames)));
+        // Composite cached ghost images oldest-first.
+        for (int age = validFrames - 1; age >= 1; --age) {
+            const int slot  = (historyHead - 1 - age + HISTORY_FRAMES * 2) % HISTORY_FRAMES;
+            const float alpha = std::pow(HISTORY_FADE, static_cast<float>(age));
+            const juce::Image& img = ghostImages[static_cast<size_t>(slot)];
+            if (img.isValid()) {
+                g.setOpacity(alpha * 0.7f);
+                g.drawImageAt(img, 0, 0);
+            }
+        }
+        g.setOpacity(1.0f);
 
-            if (grainDots > 0) {
-                juce::Random rng(static_cast<juce::int64>(age * 1337 + historyHead));
+        // =========================================================
+        // Animated grain overlay — amplitude-driven, 4D drift
+        // Runs every paint call (independent of FFT rebuild rate).
+        // grainTime advances slowly; rate tied to decay slider so
+        // slow decay = slow dreamy drift, fast decay = quicker churn.
+        // =========================================================
+        if (validFrames >= 1) {
+            // Advance grain time each paint.
+            // At decayDbPerTick=0.2 (slowest) advances 0.002/frame = very slow.
+            // At 8.0 (fastest) advances 0.04/frame = noticeably faster.
+            const float grainSpeed = juce::jmap(decayDbPerTick, 0.2f, 8.0f, 0.002f, 0.04f);
+            grainTime += grainSpeed;
 
-                for (int i = 0; i < grainDots; ++i) {
-                    const int gx = rng.nextInt(w);
+            // Use the most recent ghost frame for amplitude reference.
+            const int newestSlot = (historyHead - 2 + HISTORY_FRAMES * 2) % HISTORY_FRAMES;
+            const auto &refFrame = historyFrames[static_cast<size_t>(newestSlot)];
 
-                    // Sample the ghost line height at this x position.
-                    const float freq   = getFrequencyForX(static_cast<float>(gx));
-                    const float level  = getBinValue(frame, freq);
-                    const float db     = juce::Decibels::gainToDecibels(level, SPEC_MIN_DB);
-                    const float norm   = juce::jmap(db, SPEC_MIN_DB, SPEC_MAX_DB, 0.0f, 0.72f);
-                    const float lineY  = fh * (1.0f - norm) + dropY;
+            // Grain density scale from decay speed.
+            const float densityScale = juce::jmap(decayDbPerTick, 0.2f, 8.0f, 1.0f, 0.15f);
+            const int totalDots = static_cast<int>(static_cast<float>(w * h) / 18.0f * densityScale);
 
-                    // Place grain randomly below the ghost line (inside the filled area).
-                    const float maxGrainY = juce::jmin(fh, lineY + 60.0f);
-                    if (maxGrainY <= lineY) continue;
-                    const int gy = static_cast<int>(lineY)
-                                 + rng.nextInt(static_cast<int>(maxGrainY - lineY) + 1);
+            // Simple pseudo-noise: sin/cos of prime-multiplied coords + grainTime.
+            // Gives smooth organic drift without any library.
+            auto noise2d = [](float x, float y, float t) -> float {
+                return 0.5f + 0.5f * std::sin(x * 0.031f + t * 1.7f)
+                            * std::cos(y * 0.053f + t * 1.3f)
+                            * std::sin((x + y) * 0.021f + t * 0.9f);
+            };
 
-                    const juce::Colour col = getBandColourForFrequency(freq, bandBounds);
-                    // Fade grain away from the line.
-                    const float dist = static_cast<float>(gy) - lineY;
-                    const float fade = juce::jmap(dist, 0.0f, maxGrainY - lineY, 1.0f, 0.0f);
-                    g.setColour(col.withAlpha(alpha * grainScale * 0.25f * fade));
-                    g.fillRect(gx, gy, 1, 1);
+            juce::Random rng(static_cast<juce::int64>(grainTime * 1000.0f) & 0xFFFF);
+
+            for (int i = 0; i < totalDots; ++i) {
+                const int gx = rng.nextInt(w);
+
+                // Sample amplitude at this x position.
+                const float freq   = getFrequencyForX(static_cast<float>(gx));
+                const float level  = getBinValue(refFrame, freq);
+                const float db     = juce::Decibels::gainToDecibels(level, SPEC_MIN_DB);
+                const float normAmp = juce::jmap(db, SPEC_MIN_DB, SPEC_MAX_DB, 0.0f, 1.0f);
+
+                // Ghost line Y for the most recent frame.
+                const float lineY = fh * (1.0f - normAmp * 0.72f)
+                                  + static_cast<float>(HISTORY_DROP); // offset 1 frame
+
+                // Spread below the line — wider for quiet (low amplitude).
+                const float spread = juce::jmap(normAmp, 0.0f, 1.0f, 120.0f, 20.0f);
+                const float maxY   = juce::jmin(fh, lineY + spread);
+                if (maxY <= lineY) continue;
+
+                // Animate Y position with noise drift.
+                const float noiseY = noise2d(static_cast<float>(gx), 0.0f, grainTime);
+                const float gy_f   = lineY + (maxY - lineY) * noiseY;
+                const int   gy     = static_cast<int>(gy_f);
+                if (gy < 0 || gy >= h) continue;
+
+                // Colour from band.
+                const juce::Colour col = getBandColourForFrequency(freq, bandBounds);
+
+                // Amplitude drives: opacity (loud=bright), size (loud=bigger).
+                const float fade    = juce::jmap(static_cast<float>(gy) - lineY,
+                                                  0.0f, maxY - lineY, 1.0f, 0.0f);
+                const float opacity = normAmp * 0.65f * fade;
+
+                // Grain size: loud=3px sharp, quiet=1px soft.
+                const int sz = normAmp > 0.6f ? 3 : normAmp > 0.3f ? 2 : 1;
+
+                g.setColour(col.withAlpha(opacity));
+                g.fillRect(gx, gy, sz, sz);
+
+                // For quiet areas: add a softer halo to simulate blur.
+                if (normAmp < 0.4f) {
+                    g.setColour(col.withAlpha(opacity * 0.3f));
+                    g.fillRect(gx - 1, gy - 1, sz + 2, sz + 2);
                 }
             }
         }
@@ -606,6 +704,7 @@ void SpectrumAnalyzer::timerCallback() {
         historyFrames[static_cast<size_t>(historyHead)] = outDisp;
         historyHead  = (historyHead + 1) % HISTORY_FRAMES;
         historyCount = juce::jmin(historyCount + 1, HISTORY_FRAMES);
+        ghostImagesDirty = true; // ghost images need rebuilding
 
         outFftReady = false;
         needRepaint = true;

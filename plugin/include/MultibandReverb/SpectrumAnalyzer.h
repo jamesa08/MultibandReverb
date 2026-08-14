@@ -50,6 +50,11 @@ class SpectrumAnalyzer : public juce::Component, public juce::Timer {
     // History ring buffer: vector of vectors.
     std::vector<std::vector<float>> historyFrames;
 
+    // Pre-rendered + blurred ghost images, one per history slot.
+    // Rebuilt only when a new FFT frame arrives (not every paint call).
+    std::vector<juce::Image> ghostImages;
+    bool ghostImagesDirty = true; // force rebuild on first paint
+
     int   outFifoIndex = 0;
     bool  outFftReady  = false;
     int   inFifoIndex  = 0;
@@ -58,6 +63,7 @@ class SpectrumAnalyzer : public juce::Component, public juce::Timer {
     int   historyCount = 0;
 
     float decayDbPerTick = 1.5f;
+    float grainTime      = 0.0f; // advances each paint, drives grain drift animation
     double sampleRate    = 44100.0;
 
     juce::CriticalSection crossoverMutex;
