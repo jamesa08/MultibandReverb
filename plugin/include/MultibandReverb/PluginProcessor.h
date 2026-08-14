@@ -6,7 +6,12 @@
 
 class SpectrumAnalyzer;
 
-class MultibandReverbAudioProcessor : public juce::AudioProcessor, public juce::AudioProcessorValueTreeState::Listener {
+// Maximum number of bands supported. Parameter slots are pre-allocated up to
+// this limit so the host always sees a fixed parameter list.
+static constexpr int MAX_BANDS = 8;
+
+class MultibandReverbAudioProcessor : public juce::AudioProcessor,
+                                      public juce::AudioProcessorValueTreeState::Listener {
   public:
     MultibandReverbAudioProcessor();
     ~MultibandReverbAudioProcessor() override;
@@ -14,6 +19,7 @@ class MultibandReverbAudioProcessor : public juce::AudioProcessor, public juce::
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
     void processBlock(juce::AudioBuffer<float> &, juce::MidiBuffer &) override;
+
     std::atomic<SpectrumAnalyzer *> analyzer { nullptr };
 
     juce::AudioProcessorEditor *createEditor() override;
@@ -23,8 +29,7 @@ class MultibandReverbAudioProcessor : public juce::AudioProcessor, public juce::
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
 
-    // Return a non-zero tail so the host doesn't cut off reverb decay early.
-    // 10 seconds is a safe upper bound for typical IR lengths.
+    // 10 seconds covers most practical IR tails.
     double getTailLengthSeconds() const override { return 10.0; }
 
     int getNumPrograms() override { return 1; }
@@ -38,45 +43,103 @@ class MultibandReverbAudioProcessor : public juce::AudioProcessor, public juce::
 
     void parameterChanged(const juce::String &parameterID, float newValue) override;
 
+    // -------------------------------------------------------------------------
+    // Band management (call from UI thread only)
+    // -------------------------------------------------------------------------
+    void addBand();
+    void removeBand(int bandIndex);
+    int getNumBands() const { return numActiveBands; }
+
+    // -------------------------------------------------------------------------
+    // IR loading
+    // -------------------------------------------------------------------------
+    void loadImpulseResponse(int bandIndex, const juce::File &irFile);
+
+    // -------------------------------------------------------------------------
+    // Crossover frequency access (UI thread reads, audio thread reads via atomic copy)
+    // -------------------------------------------------------------------------
+    // Returns the upper crossover frequency for band [bandIndex].
+    // The last active band has no upper crossover (returns 20000 Hz).
+    float getCrossoverFrequency(int crossoverIndex) const;
+    int getNumCrossovers() const { return juce::jmax(0, numActiveBands - 1); }
+
+    // Called by SpectrumAnalyzer when user drags a crossover handle.
+    void setCrossoverFrequency(int crossoverIndex, float freq);
+
+    // Called by SpectrumAnalyzer to read per-band volume for the overlay.
+    float getBandVolumeDb(int bandIndex) const {
+        if (bandIndex >= 0 && bandIndex < MAX_BANDS)
+            return bandVolume[static_cast<size_t>(bandIndex)]->load();
+        return 0.0f;
+    }
+
+    bool wasStateLoaded() const { return stateWasLoaded; }
+
+    juce::String getBandIRName(int bandIndex) const {
+        if (bandIndex >= 0 && bandIndex < numActiveBands)
+            return bandReverbs[static_cast<size_t>(bandIndex)].irName;
+        return {};
+    }
+
+    // -------------------------------------------------------------------------
+    // Public DSP state (accessed by BandControls via UI thread)
+    // -------------------------------------------------------------------------
+    struct BandReverb {
+        std::unique_ptr<juce::dsp::Convolution> convolution;
+        juce::AudioBuffer<float> irBuffer;
+        juce::String irName; // display name of the loaded IR file, empty if none
+
+        BandReverb() : convolution(std::make_unique<juce::dsp::Convolution>()) {}
+
+        BandReverb(const BandReverb &) = delete;
+        BandReverb &operator=(const BandReverb &) = delete;
+        BandReverb(BandReverb &&) = default;
+        BandReverb &operator=(BandReverb &&) = default;
+    };
+
+    // Fixed-size array; only indices [0, numActiveBands) are active.
+    std::array<BandReverb, MAX_BANDS> bandReverbs;
+
     juce::AudioProcessorValueTreeState parameters;
     AudioTransportComponent transportComponent;
 
-    void updateCrossoverFrequencies();
-    void loadImpulseResponse(size_t bandIndex, const juce::File &irFile);
+    // Notifies editor to rebuild its band controls.
+    std::function<void()> onBandLayoutChanged;
 
+  private:
     struct CrossoverFilter {
         juce::dsp::LinkwitzRileyFilter<float> lowpass;
         juce::dsp::LinkwitzRileyFilter<float> highpass;
     };
 
-    struct BandReverb {
-        std::unique_ptr<juce::dsp::Convolution> convolution;
-        juce::AudioBuffer<float> irBuffer;
-        float mix = 0.5f;
-        bool isSoloed = false;
-        bool isMuted = false;
-
-        BandReverb() : convolution(std::make_unique<juce::dsp::Convolution>()) {}
-
-        // Explicitly delete copy operations
-        BandReverb(const BandReverb &) = delete;
-        BandReverb &operator=(const BandReverb &) = delete;
-
-        // Enable move operations
-        BandReverb(BandReverb &&) = default;
-        BandReverb &operator=(BandReverb &&) = default;
-    };
-
-    void updateSoloMuteStates();
-
-    std::vector<CrossoverFilter> crossovers;
-    std::vector<BandReverb> bandReverbs;
-
-  private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
-    std::atomic<float> *lowCrossoverFreq = nullptr;
-    std::atomic<float> *midCrossoverFreq = nullptr;
+    void prepareConvolutions(double sampleRate, int blockSize, int numChannels);
+    void updateCrossoverFilters();
+    void rebuildCrossoverFilters(double sampleRate, int blockSize, int numChannels);
+    void notifyAnalyzerOfCrossovers();
+
+    int numActiveBands = 1;
+
+    // Crossover frequencies between adjacent bands. Size = numActiveBands - 1.
+    // Stored as plain floats; written on UI thread, read on audio thread.
+    // Access is protected by a simple spinlock since writes are infrequent.
+    juce::SpinLock crossoverLock;
+    std::vector<float> crossoverFrequencies; // size: numActiveBands - 1
+
+    // Crossover filters; rebuilt when band count changes.
+    // Size = numActiveBands - 1; each splits one frequency.
+    std::vector<CrossoverFilter> crossoverFilters;
+
+    // Per-band parameter pointers into APVTS (pre-allocated for MAX_BANDS slots).
+    std::array<std::atomic<float> *, MAX_BANDS> bandVolume  {};
+    std::array<std::atomic<float> *, MAX_BANDS> bandMix     {};
+    std::array<std::atomic<float> *, MAX_BANDS> bandSolo    {};
+    std::array<std::atomic<float> *, MAX_BANDS> bandMute    {};
+
+    double currentSampleRate = 44100.0;
+    int currentBlockSize = 512;
+    bool stateWasLoaded = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MultibandReverbAudioProcessor)
 };

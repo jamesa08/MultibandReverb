@@ -1,31 +1,58 @@
-// PluginEditor.h
 #pragma once
+#include "MultibandReverb/BandControls.h"
+#include "MultibandReverb/PluginProcessor.h"
+#include "MultibandReverb/SpectrumAnalyzer.h"
+#include <JuceHeader.h>
 
-#include "PluginProcessor.h"
-#include "SpectrumAnalyzer.h"
-#include "BandControls.h"
+// Inner component that holds all band panels side by side.
+// Its width grows with the number of bands; it lives inside a Viewport.
+class BandStrip : public juce::Component {
+  public:
+    BandStrip() = default;
+
+    void resized() override {
+        const int n       = static_cast<int>(bandControls.size());
+        const int bandW   = 160;
+        const int spacing = 8;
+        setSize(n * bandW + (n - 1) * spacing, getHeight());
+        int x = 0;
+        for (auto &bc : bandControls) {
+            bc->setBounds(x, 0, bandW, getHeight());
+            x += bandW + spacing;
+        }
+    }
+
+    std::vector<std::unique_ptr<BandControls>> bandControls;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BandStrip)
+};
 
 class MultibandReverbAudioProcessorEditor : public juce::AudioProcessorEditor {
-    public:
-      explicit MultibandReverbAudioProcessorEditor(MultibandReverbAudioProcessor &p);
-      ~MultibandReverbAudioProcessorEditor() override;
+  public:
+    explicit MultibandReverbAudioProcessorEditor(MultibandReverbAudioProcessor &);
+    ~MultibandReverbAudioProcessorEditor() override;
 
-      void paint(juce::Graphics &) override;
-      void resized() override;
+    void paint(juce::Graphics &) override;
+    void resized() override;
 
-    private:
-      MultibandReverbAudioProcessor &processorRef;
-      SpectrumAnalyzer analyzer;
+  private:
+    void rebuildBandControls();
+    void onAddBand();
+    void onDeleteBand(int bandIndex);
 
-      BandControls lowBand{"Low", 0, processorRef};
-      BandControls midBand{"Mid", 1, processorRef};
-      BandControls highBand{"High", 2, processorRef};
-      juce::Slider lowCrossoverSlider;
-      juce::Slider midCrossoverSlider;
+    MultibandReverbAudioProcessor &processorRef;
 
-      std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>> sliderAttachments;
+    SpectrumAnalyzer analyzer;
 
-      void attachSliders();
+    // Fixed-size viewport: bands scroll horizontally inside it.
+    BandStrip     bandStrip;
+    juce::Viewport bandViewport;
 
-      JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MultibandReverbAudioProcessorEditor)
+    juce::TextButton addBandButton { "+" };
+
+    // FFT smoothing control in the toolbar.
+    juce::Slider     smoothingSlider;
+    juce::Label      smoothingLabel;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MultibandReverbAudioProcessorEditor)
 };

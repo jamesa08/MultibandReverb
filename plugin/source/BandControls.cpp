@@ -1,148 +1,148 @@
 #include "MultibandReverb/BandControls.h"
 #include "MultibandReverb/PluginProcessor.h"
 
-//==============================================================================
-BandControls::BandControls(const juce::String &bandName, size_t bandIndex, MultibandReverbAudioProcessor &processor) : name(bandName), bandIdx(bandIndex), processorRef(processor) {
+BandControls::BandControls(int bandIndex,
+                            MultibandReverbAudioProcessor &processor,
+                            std::function<void(int)> onDelete)
+    : bandIdx(bandIndex),
+      processorRef(processor),
+      deleteCallback(std::move(onDelete))
+{
+    // Name label.
     addAndMakeVisible(nameLabel);
-    nameLabel.setText(name + " Band", juce::dontSendNotification);
-    auto font = juce::Font(juce::FontOptions(16.0f).withStyle("Bold"));
-    nameLabel.setFont(font);
+    nameLabel.setFont(juce::Font(juce::FontOptions(13.0f).withStyle("Bold")));
+    nameLabel.setJustificationType(juce::Justification::centredLeft);
 
+    // IR load button.
     addAndMakeVisible(irLoadButton);
     irLoadButton.onClick = [this] { loadIRButtonClicked(); };
 
-    // Volume Slider setup
-    addAndMakeVisible(volumeSlider);
-    volumeSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
-    volumeSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);
-    volumeSlider.setTextValueSuffix(" dB");
-
-    addAndMakeVisible(volumeLabel);
-    volumeLabel.setText("Volume", juce::dontSendNotification);
-    volumeLabel.attachToComponent(&volumeSlider, false);
-
-    // Set up volume parameter attachment based on band
-    juce::String volParamID = bandIdx == 0 ? "lowVol" : (bandIdx == 1 ? "midVol" : "highVol");
-    volumeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processorRef.parameters, volParamID, volumeSlider);
-
-    // Mix Slider setup
-    addAndMakeVisible(mixSlider);
-    mixSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
-    mixSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);
-    mixSlider.setRange(0.0, 100.0, 1.0);
-    mixSlider.setValue(50.0);
-
-    addAndMakeVisible(mixLabel);
-    mixLabel.setText("Mix %", juce::dontSendNotification);
-    mixLabel.attachToComponent(&mixSlider, false);
-
-    mixSlider.onValueChange = [this] {
-        if (bandIdx < processorRef.bandReverbs.size()) {
-            processorRef.bandReverbs[bandIdx].mix = static_cast<float>(mixSlider.getValue()) / 100.0f;
-        }
+    // Delete button.
+    addAndMakeVisible(deleteButton);
+    deleteButton.setColour(juce::TextButton::buttonColourId,
+                           juce::Colours::darkred.withAlpha(0.6f));
+    deleteButton.onClick = [this] {
+        if (deleteCallback) deleteCallback(bandIdx);
     };
 
-    // Crossover Slider setup
-    addAndMakeVisible(crossoverSlider);
-    crossoverSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
-    crossoverSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);
-    crossoverSlider.setTextValueSuffix(" Hz");
-    crossoverSlider.setSkewFactorFromMidPoint(1000.0);
-
-    addAndMakeVisible(crossoverLabel);
-
-    // Configure crossover based on band
-    if (bandIdx == 0) { // Low band
-        crossoverLabel.setText("Crossover", juce::dontSendNotification);
-        crossoverAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processorRef.parameters, "lowCross", crossoverSlider);
-    } else if (bandIdx == 1) { // Mid band
-        crossoverLabel.setText("Crossover", juce::dontSendNotification);
-        crossoverAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processorRef.parameters, "midCross", crossoverSlider);
-    } else { // High band - no crossover control
-        crossoverSlider.setVisible(false);
-        crossoverLabel.setVisible(false);
-    }
-
-    crossoverLabel.attachToComponent(&crossoverSlider, false);
-
-    // Solo/Mute button setup
+    // Solo / Mute.
     addAndMakeVisible(soloButton);
     addAndMakeVisible(muteButton);
-
     soloButton.setColour(juce::TextButton::buttonOnColourId, juce::Colours::yellow);
     muteButton.setColour(juce::TextButton::buttonOnColourId, juce::Colours::red);
-
     soloButton.setClickingTogglesState(true);
     muteButton.setClickingTogglesState(true);
 
-    soloButton.onClick = [this] {
-        isSoloed = soloButton.getToggleState();
-        if (isSoloed) {
-            muteButton.setToggleState(false, juce::dontSendNotification);
-            isMuted = false;
-        }
-        // Update the processor's band state directly
-        processorRef.bandReverbs[bandIdx].isSoloed = isSoloed;
-        processorRef.bandReverbs[bandIdx].isMuted = isMuted;
-        processorRef.updateSoloMuteStates();
-    };
+    // Volume slider.
+    addAndMakeVisible(volumeSlider);
+    addAndMakeVisible(volumeLabel);
+    volumeSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
+    volumeSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 55, 16);
+    volumeSlider.setTextValueSuffix(" dB");
+    volumeLabel.setText("Vol", juce::dontSendNotification);
+    volumeLabel.setJustificationType(juce::Justification::centred);
+    volumeLabel.setFont(juce::Font(juce::FontOptions(11.0f)));
 
-    muteButton.onClick = [this] {
-        isMuted = muteButton.getToggleState();
-        if (isMuted) {
-            soloButton.setToggleState(false, juce::dontSendNotification);
-            isSoloed = false;
-        }
-        // Update the processor's band state directly
-        processorRef.bandReverbs[bandIdx].isSoloed = isSoloed;
-        processorRef.bandReverbs[bandIdx].isMuted = isMuted;
-        processorRef.updateSoloMuteStates();
-    };
+    // Mix slider.
+    addAndMakeVisible(mixSlider);
+    addAndMakeVisible(mixLabel);
+    mixSlider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
+    mixSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 55, 16);
+    mixSlider.setTextValueSuffix(" %");
+    mixLabel.setText("Mix", juce::dontSendNotification);
+    mixLabel.setJustificationType(juce::Justification::centred);
+    mixLabel.setFont(juce::Font(juce::FontOptions(11.0f)));
+
+    setBandIndex(bandIndex);
 }
 
-BandControls::~BandControls() {
-    // Do not touch convolution here: it is owned by the processor and may
-    // still be active on the audio thread when the editor is torn down.
+BandControls::~BandControls() {}
+
+void BandControls::setBandIndex(int newIndex) {
+    bandIdx = newIndex;
+
+    // Detach old APVTS attachments before re-attaching.
+    volumeAttachment.reset();
+    mixAttachment.reset();
+    soloAttachment.reset();
+    muteAttachment.reset();
+
+    nameLabel.setText("Band " + juce::String(bandIdx + 1), juce::dontSendNotification);
+
+    juce::String idx(bandIdx);
+    volumeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        processorRef.parameters, "band" + idx + "_vol", volumeSlider);
+    mixAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        processorRef.parameters, "band" + idx + "_mix", mixSlider);
+    soloAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        processorRef.parameters, "band" + idx + "_solo", soloButton);
+    muteAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        processorRef.parameters, "band" + idx + "_mute", muteButton);
 }
 
 void BandControls::loadIRButtonClicked() {
-    fileChooser = std::make_unique<juce::FileChooser>("Select an IR file...", juce::File{}, "*.wav;*.aif;*.aiff");
+    fileChooser = std::make_unique<juce::FileChooser>(
+        "Select an IR file...", juce::File{}, "*.wav;*.aif;*.aiff");
 
-    auto folderChooserFlags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
-
-    fileChooser->launchAsync(folderChooserFlags, [this](const juce::FileChooser &fc) {
-        auto file = fc.getResult();
-        if (file != juce::File{}) {
-            processorRef.loadImpulseResponse(bandIdx, file);
-            irLoadButton.setButtonText(file.getFileNameWithoutExtension());
-        }
-    });
+    fileChooser->launchAsync(
+        juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [this](const juce::FileChooser &fc) {
+            auto file = fc.getResult();
+            if (file != juce::File{}) {
+                processorRef.loadImpulseResponse(bandIdx, file);
+                irLoadButton.setButtonText(file.getFileNameWithoutExtension());
+            }
+        });
 }
 
 void BandControls::paint(juce::Graphics &g) {
-    g.setColour(juce::Colours::white.withAlpha(0.1f));
-    g.fillRoundedRectangle(getLocalBounds().toFloat(), 10.0f);
+    const auto b  = getLocalBounds().toFloat();
+
+    // Panel background: slightly lighter than the editor navy.
+    g.setColour(juce::Colour(0xff111128));
+    g.fillRoundedRectangle(b, 8.0f);
+
+    // Coloured border that matches the band's spectrum colour.
+    const juce::Colour bandColours[] = {
+        juce::Colour(0xff6ec6f5), // light blue
+        juce::Colour(0xfff5a623), // orange
+        juce::Colour(0xff7ed321), // green
+        juce::Colour(0xffbd10e0), // purple
+        juce::Colour(0xffe91e63), // pink
+        juce::Colour(0xff00bcd4), // cyan
+        juce::Colour(0xffffeb3b), // yellow
+        juce::Colour(0xff4caf50), // mid green
+    };
+    const juce::Colour col = bandColours[static_cast<size_t>(bandIdx) % 8];
+    g.setColour(col.withAlpha(0.35f));
+    g.drawRoundedRectangle(b.reduced(0.5f), 8.0f, 1.2f);
 }
 
 void BandControls::resized() {
-    auto area = getLocalBounds().reduced(10);
+    auto area = getLocalBounds().reduced(8);
 
-    // Top row with name and solo/mute buttons
-    auto topRow = area.removeFromTop(20);
-    nameLabel.setBounds(topRow.removeFromLeft(topRow.getWidth() - 60));
-    soloButton.setBounds(topRow.removeFromLeft(30));
-    muteButton.setBounds(topRow);
+    // Top row: name | S | M | X
+    auto topRow = area.removeFromTop(22);
+    nameLabel.setBounds(topRow.removeFromLeft(topRow.getWidth() - 72));
+    deleteButton.setBounds(topRow.removeFromRight(22));
+    topRow.removeFromRight(2);
+    muteButton.setBounds(topRow.removeFromRight(22));
+    topRow.removeFromRight(2);
+    soloButton.setBounds(topRow.removeFromRight(22));
 
-    auto controlArea = area.reduced(10);
-    irLoadButton.setBounds(controlArea.removeFromTop(30));
+    area.removeFromTop(4);
 
-    controlArea.removeFromTop(30);
+    // IR button.
+    irLoadButton.setBounds(area.removeFromTop(26));
+    area.removeFromTop(6);
 
-    // Split remaining area for sliders
-    auto sliderArea = controlArea.removeFromTop(controlArea.getHeight());
+    // Sliders side by side with labels above.
+    const int halfW = area.getWidth() / 2;
 
-    auto sliderWidth = sliderArea.getWidth() / 3;
-    volumeSlider.setBounds(sliderArea.removeFromLeft(sliderWidth));
-    mixSlider.setBounds(sliderArea.removeFromLeft(sliderWidth));
-    crossoverSlider.setBounds(sliderArea);
+    auto volArea = area.removeFromLeft(halfW);
+    volumeLabel.setBounds(volArea.removeFromBottom(14));
+    volumeSlider.setBounds(volArea);
+
+    mixLabel.setBounds(area.removeFromBottom(14));
+    mixSlider.setBounds(area);
 }
