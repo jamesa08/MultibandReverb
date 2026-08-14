@@ -68,6 +68,10 @@ void MultibandReverbAudioProcessor::prepareToPlay(double sampleRate, int samples
     }
 
     updateCrossoverFrequencies();
+
+    // Inform the analyzer of the real sample rate so bin mapping is correct
+    if (auto *a = analyzer.load())
+        a->setSampleRate(sampleRate);
 }
 
 void MultibandReverbAudioProcessor::releaseResources() { transportComponent.releaseResources(); }
@@ -213,20 +217,20 @@ void MultibandReverbAudioProcessor::processBlock(juce::AudioBuffer<float> &buffe
     }
 
     // Now push the processed audio to the analyzer
-    if (analyzer != nullptr) {
-        float analysisBuf[2048];
+    if (auto *analyzerPtr = analyzer.load()) {
+        std::vector<float> analysisBuf(static_cast<size_t>(numSamples));
         const float *channelData = buffer.getReadPointer(0);
 
         if (buffer.getNumChannels() > 1) {
             const float *channel2Data = buffer.getReadPointer(1);
             for (int i = 0; i < numSamples; ++i) {
-                analysisBuf[i] = (channelData[i] + channel2Data[i]) * 0.5f;
+                analysisBuf[static_cast<size_t>(i)] = (channelData[i] + channel2Data[i]) * 0.5f;
             }
         } else {
-            std::memcpy(analysisBuf, channelData, numSamples * sizeof(float));
+            std::memcpy(analysisBuf.data(), channelData, static_cast<size_t>(numSamples) * sizeof(float));
         }
 
-        analyzer->pushBuffer(analysisBuf, numSamples);
+        analyzerPtr->pushBuffer(analysisBuf.data(), numSamples);
     }
 }
 
@@ -252,6 +256,11 @@ void MultibandReverbAudioProcessor::updateCrossoverFrequencies() {
         auto lowFreq = lowCrossoverFreq->load();
         auto midFreq = midCrossoverFreq->load();
 
+        // Clamp so the low crossover can never meet or exceed the mid crossover
+        const float minSeparation = 100.0f;
+        lowFreq = juce::jmin(lowFreq, midFreq - minSeparation);
+        lowFreq = juce::jmax(lowFreq, 20.0f);
+
         // Update the crossover filters with new frequencies
         if (!crossovers.empty()) {
             crossovers[0].lowpass.setCutoffFrequency(lowFreq);
@@ -262,40 +271,52 @@ void MultibandReverbAudioProcessor::updateCrossoverFrequencies() {
                 crossovers[1].highpass.setCutoffFrequency(midFreq);
             }
         }
-
-        DBG("Crossover frequencies updated - Low: " << lowFreq << " Hz, Mid: " << midFreq << " Hz");
     }
 }
 
 void MultibandReverbAudioProcessor::loadImpulseResponse(size_t bandIndex, const juce::File &irFile) {
-    if (bandIndex < bandReverbs.size()) {
-        auto &reverb = bandReverbs[bandIndex];
+    if (bandIndex >= bandReverbs.size())
+        return;
 
-        juce::AudioFormatManager formatManager;
-        formatManager.registerBasicFormats();
+    auto &reverb = bandReverbs[bandIndex];
 
-        std::unique_ptr<juce::AudioFormatReader> reader(formatManager.createReaderFor(irFile));
+    juce::AudioFormatManager formatManager;
+    formatManager.registerBasicFormats();
 
-        if (reader != nullptr) {
-            DBG("Loading IR file: " << irFile.getFullPathName());
-            DBG("Sample rate: " << reader->sampleRate);
-            DBG("Length in samples: " << reader->lengthInSamples);
+    std::unique_ptr<juce::AudioFormatReader> reader(formatManager.createReaderFor(irFile));
+    if (reader == nullptr)
+        return;
 
-            const auto numSamples = static_cast<int>(reader->lengthInSamples);
-
-            reverb.irBuffer.setSize(1, numSamples);
-            reader->read(&reverb.irBuffer, 0, numSamples, 0, true, false);
-
-            reverb.convolution = std::make_unique<juce::dsp::Convolution>();
-            reverb.convolution->prepare({getSampleRate(), static_cast<uint32>(getBlockSize()), static_cast<uint32>(getTotalNumOutputChannels())});
-
-            reverb.convolution->loadImpulseResponse(std::move(reverb.irBuffer), getSampleRate(), juce::dsp::Convolution::Stereo::no, juce::dsp::Convolution::Trim::no, juce::dsp::Convolution::Normalise::yes);
-
-            DBG("IR loaded successfully into band " << bandIndex);
-        } else {
-            DBG("Failed to read IR file");
-        }
+    // Reject IRs longer than 60 seconds to keep convolution tractable.
+    const double irLengthSeconds = static_cast<double>(reader->lengthInSamples) / reader->sampleRate;
+    const double maxIRSeconds = 60.0;
+    if (irLengthSeconds > maxIRSeconds) {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon,
+            "IR Too Long",
+            "The selected IR is " + juce::String(irLengthSeconds, 1) + " seconds long. "
+            "Please use an IR shorter than " + juce::String(maxIRSeconds, 0) + " seconds.");
+        return;
     }
+
+    // Read as stereo if the IR has two channels, otherwise mono.
+    const int numChannels = static_cast<int>(juce::jmin(reader->numChannels, static_cast<unsigned int>(2)));
+    const bool isStereoIR = (numChannels == 2);
+    const int numSamples  = static_cast<int>(reader->lengthInSamples);
+
+    reverb.irBuffer.setSize(numChannels, numSamples);
+    reader->read(&reverb.irBuffer, 0, numSamples, 0, true, isStereoIR);
+
+    // IMPORTANT: do NOT reassign reverb.convolution here. The audio thread may be
+    // processing through it right now. juce::dsp::Convolution::loadImpulseResponse()
+    // is designed to swap IRs safely via its own background thread, so we call it
+    // on the existing prepared object.
+    reverb.convolution->loadImpulseResponse(
+        std::move(reverb.irBuffer),
+        getSampleRate(),
+        isStereoIR ? juce::dsp::Convolution::Stereo::yes : juce::dsp::Convolution::Stereo::no,
+        juce::dsp::Convolution::Trim::no,
+        juce::dsp::Convolution::Normalise::yes);
 }
 
 void MultibandReverbAudioProcessor::parameterChanged(const juce::String &parameterID, [[maybe_unused]] float newValue) {
@@ -303,8 +324,9 @@ void MultibandReverbAudioProcessor::parameterChanged(const juce::String &paramet
         updateCrossoverFrequencies();
 
         // Update analyzer if it exists
-        if (analyzer != nullptr && lowCrossoverFreq != nullptr && midCrossoverFreq != nullptr) {
-            analyzer->setCrossoverFrequencies(lowCrossoverFreq->load(), midCrossoverFreq->load());
+        if (auto *a = analyzer.load()) {
+            if (lowCrossoverFreq != nullptr && midCrossoverFreq != nullptr)
+                a->setCrossoverFrequencies(lowCrossoverFreq->load(), midCrossoverFreq->load());
         }
     }
 }

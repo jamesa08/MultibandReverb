@@ -15,6 +15,7 @@ class SpectrumAnalyzer : public juce::Component, public juce::Timer {
 
     void pushBuffer(const float *data, int size);
     void setCrossoverFrequencies(float lowCross, float midCross);
+    void setSampleRate(double sr) { sampleRate = sr; }
 
     // Add processor connection
     void setProcessor(MultibandReverbAudioProcessor *p) { audioProcessor = p; }
@@ -39,6 +40,7 @@ class SpectrumAnalyzer : public juce::Component, public juce::Timer {
 
     float temporalSmoothing = 0.8f; // Smoothing factor (0 to 1)
     int spectralAveraging = 3;      // Number of bins to average
+    double sampleRate = 44100.0;    // Actual sample rate, set via setSampleRate()
 
     float getSmoothedValueForFrequency(float freq, float minFreq, float maxFreq, int width);
 

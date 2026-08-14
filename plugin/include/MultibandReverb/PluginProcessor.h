@@ -14,7 +14,7 @@ class MultibandReverbAudioProcessor : public juce::AudioProcessor, public juce::
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
     void processBlock(juce::AudioBuffer<float> &, juce::MidiBuffer &) override;
-    SpectrumAnalyzer *analyzer = nullptr;
+    std::atomic<SpectrumAnalyzer *> analyzer { nullptr };
 
     juce::AudioProcessorEditor *createEditor() override;
     bool hasEditor() const override { return true; }
@@ -22,7 +22,10 @@ class MultibandReverbAudioProcessor : public juce::AudioProcessor, public juce::
     const juce::String getName() const override { return JucePlugin_Name; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.0; }
+
+    // Return a non-zero tail so the host doesn't cut off reverb decay early.
+    // 10 seconds is a safe upper bound for typical IR lengths.
+    double getTailLengthSeconds() const override { return 10.0; }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }

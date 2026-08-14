@@ -5,8 +5,7 @@
 BandControls::BandControls(const juce::String &bandName, size_t bandIndex, MultibandReverbAudioProcessor &processor) : name(bandName), bandIdx(bandIndex), processorRef(processor) {
     addAndMakeVisible(nameLabel);
     nameLabel.setText(name + " Band", juce::dontSendNotification);
-    auto font = juce::Font(16.0f);
-    font.setBold(true);
+    auto font = juce::Font(juce::FontOptions(16.0f).withStyle("Bold"));
     nameLabel.setFont(font);
 
     addAndMakeVisible(irLoadButton);
@@ -39,7 +38,7 @@ BandControls::BandControls(const juce::String &bandName, size_t bandIndex, Multi
 
     mixSlider.onValueChange = [this] {
         if (bandIdx < processorRef.bandReverbs.size()) {
-            processorRef.bandReverbs[bandIdx].mix = mixSlider.getValue() / 100.0f;
+            processorRef.bandReverbs[bandIdx].mix = static_cast<float>(mixSlider.getValue()) / 100.0f;
         }
     };
 
@@ -101,7 +100,10 @@ BandControls::BandControls(const juce::String &bandName, size_t bandIndex, Multi
     };
 }
 
-BandControls::~BandControls() { processorRef.bandReverbs[bandIdx].convolution->reset(); }
+BandControls::~BandControls() {
+    // Do not touch convolution here: it is owned by the processor and may
+    // still be active on the audio thread when the editor is torn down.
+}
 
 void BandControls::loadIRButtonClicked() {
     fileChooser = std::make_unique<juce::FileChooser>("Select an IR file...", juce::File{}, "*.wav;*.aif;*.aiff");

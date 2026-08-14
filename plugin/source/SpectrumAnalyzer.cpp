@@ -184,15 +184,15 @@ void SpectrumAnalyzer::timerCallback() {
     }
 }
 
-float SpectrumAnalyzer::getSmoothedValueForFrequency(float freq, float minFreq, float maxFreq, int width) {
+float SpectrumAnalyzer::getSmoothedValueForFrequency(float freq, [[maybe_unused]] float minFreq, [[maybe_unused]] float maxFreq, [[maybe_unused]] int width) {
     auto getNormalizedBinValue = [this](int bin) {
         if (bin >= 0 && bin < 2048)
-            return smoothedFFTData[bin];
+            return smoothedFFTData[static_cast<size_t>(bin)];
         return 0.0f;
     };
 
     // Calculate which FFT bin corresponds to this frequency
-    float binFreq = freq * 2048.0f / 44100.0f;
+    float binFreq = freq * 2048.0f / static_cast<float>(sampleRate);
     int centralBin = juce::jlimit(0, 1024, (int)binFreq);
 
     // Average over nearby bins for spectral smoothing

@@ -4,18 +4,16 @@
 //==============================================================================
 MultibandReverbAudioProcessorEditor::MultibandReverbAudioProcessorEditor(MultibandReverbAudioProcessor &p) : AudioProcessorEditor(&p), processorRef(p) {
 
-    // Connect analyzer
-    processorRef.analyzer = &analyzer;
+    // Connect analyzer (atomic store so processBlock sees it safely)
+    processorRef.analyzer.store(&analyzer);
     analyzer.setProcessor(&processorRef);
 
     // Transport controls
     addAndMakeVisible(processorRef.transportComponent);
     if (!JUCEApplication::getInstance()->isStandaloneApp()) {
-        std::cout << "NOT STANDALONE" << std::endl;
-        setSize(800, 530); 
+        setSize(800, 530);
         processorRef.transportComponent.setVisible(false);
     } else {
-        std::cout << "STANDALONE" << std::endl;
         setSize(800, 600);
     }
 
@@ -53,7 +51,7 @@ MultibandReverbAudioProcessorEditor::MultibandReverbAudioProcessorEditor(Multiba
     addAndMakeVisible(analyzer);
 }
 
-MultibandReverbAudioProcessorEditor::~MultibandReverbAudioProcessorEditor() { processorRef.analyzer = nullptr; }
+MultibandReverbAudioProcessorEditor::~MultibandReverbAudioProcessorEditor() { processorRef.analyzer.store(nullptr); }
 
 void MultibandReverbAudioProcessorEditor::paint(juce::Graphics &g) { g.fillAll(juce::Colours::darkgrey); }
 
