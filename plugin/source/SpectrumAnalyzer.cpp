@@ -118,6 +118,9 @@ void SpectrumAnalyzer::paint(juce::Graphics &g) {
     // Frequency grid lines
     const int freqs[] = {20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000};
     for (int freq : freqs) {
+        if (freq == 20 || freq == 20000) {
+            continue;
+        }   
         auto x = std::log(freq / minFreq) / std::log(maxFreq / minFreq) * width;
         g.drawVerticalLine((int)x, 0.0f, (float)height);
 
@@ -128,6 +131,9 @@ void SpectrumAnalyzer::paint(juce::Graphics &g) {
     // Level grid lines
     const int levels[] = {12, 0, -12, -24, -36, -48, -60};
     for (int level : levels) {
+        if (level == 12) {
+            continue;
+        }
         float normalizedY = juce::jmap((float)level, minDb, maxDb, 1.0f, 0.0f);
         float y = height * normalizedY;
         g.drawHorizontalLine((int)y, 0.0f, (float)width);

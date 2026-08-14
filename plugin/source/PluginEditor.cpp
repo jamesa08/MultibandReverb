@@ -3,7 +3,6 @@
 
 //==============================================================================
 MultibandReverbAudioProcessorEditor::MultibandReverbAudioProcessorEditor(MultibandReverbAudioProcessor &p) : AudioProcessorEditor(&p), processorRef(p) {
-    setSize(800, 700); // Made taller
 
     // Connect analyzer
     processorRef.analyzer = &analyzer;
@@ -11,6 +10,14 @@ MultibandReverbAudioProcessorEditor::MultibandReverbAudioProcessorEditor(Multiba
 
     // Transport controls
     addAndMakeVisible(processorRef.transportComponent);
+    if (!JUCEApplication::getInstance()->isStandaloneApp()) {
+        std::cout << "NOT STANDALONE" << std::endl;
+        setSize(800, 530); 
+        processorRef.transportComponent.setVisible(false);
+    } else {
+        std::cout << "STANDALONE" << std::endl;
+        setSize(800, 600);
+    }
 
     // Set up crossover frequency sliders
 
@@ -54,7 +61,9 @@ void MultibandReverbAudioProcessorEditor::resized() {
     auto bounds = getLocalBounds().reduced(20);
 
     // Transport controls at the very top
-    processorRef.transportComponent.setBounds(bounds.removeFromTop(70));
+    if (JUCEApplication::getInstance()->isStandaloneApp()) {
+        processorRef.transportComponent.setBounds(bounds.removeFromTop(70));
+    }
 
     bounds.removeFromTop(20); // Spacing
 
@@ -63,12 +72,10 @@ void MultibandReverbAudioProcessorEditor::resized() {
 
     bounds.removeFromTop(20); // Spacing
 
-    // Crossover controls
-    auto crossoverBounds = bounds.removeFromTop(60);
-    lowCrossoverSlider.setBounds(crossoverBounds.removeFromTop(25));
-    midCrossoverSlider.setBounds(crossoverBounds.removeFromTop(25));
-
-    bounds.removeFromTop(20); // Spacing
+    // // Crossover controls
+    // auto crossoverBounds = bounds.removeFromTop(60);
+    // lowCrossoverSlider.setBounds(crossoverBounds.removeFromTop(25));
+    // midCrossoverSlider.setBounds(crossoverBounds.removeFromTop(25));
 
     // Band controls
     auto bandWidth = bounds.getWidth() / 3;

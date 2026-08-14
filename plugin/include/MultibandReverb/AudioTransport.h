@@ -118,6 +118,11 @@ class AudioTransportComponent : public juce::Component, public juce::Timer, publ
         }
     }
 
+    bool isTransportPlaying() const {
+        return transportSource.isPlaying();
+    }
+
+
   private:
     void updatePlayButtonText() { playButton.setButtonText(transportSource.isPlaying() ? "Pause" : "Play"); }
 

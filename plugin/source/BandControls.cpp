@@ -54,10 +54,10 @@ BandControls::BandControls(const juce::String &bandName, size_t bandIndex, Multi
 
     // Configure crossover based on band
     if (bandIdx == 0) { // Low band
-        crossoverLabel.setText("High Cut", juce::dontSendNotification);
+        crossoverLabel.setText("Crossover", juce::dontSendNotification);
         crossoverAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processorRef.parameters, "lowCross", crossoverSlider);
     } else if (bandIdx == 1) { // Mid band
-        crossoverLabel.setText("High Cut", juce::dontSendNotification);
+        crossoverLabel.setText("Crossover", juce::dontSendNotification);
         crossoverAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processorRef.parameters, "midCross", crossoverSlider);
     } else { // High band - no crossover control
         crossoverSlider.setVisible(false);
@@ -134,20 +134,13 @@ void BandControls::resized() {
     auto controlArea = area.reduced(10);
     irLoadButton.setBounds(controlArea.removeFromTop(30));
 
-    controlArea.removeFromTop(10);
+    controlArea.removeFromTop(30);
 
     // Split remaining area for sliders
-    auto sliderArea = controlArea.removeFromTop(controlArea.getHeight() / 2);
+    auto sliderArea = controlArea.removeFromTop(controlArea.getHeight());
 
-    // Position sliders side by side if crossover is visible
-    if (crossoverSlider.isVisible()) {
-        auto sliderWidth = sliderArea.getWidth() / 3;
-        volumeSlider.setBounds(sliderArea.removeFromLeft(sliderWidth));
-        mixSlider.setBounds(sliderArea.removeFromLeft(sliderWidth));
-        crossoverSlider.setBounds(sliderArea);
-    } else {
-        auto sliderWidth = sliderArea.getWidth() / 2;
-        volumeSlider.setBounds(sliderArea.removeFromLeft(sliderWidth));
-        mixSlider.setBounds(sliderArea);
-    }
+    auto sliderWidth = sliderArea.getWidth() / 3;
+    volumeSlider.setBounds(sliderArea.removeFromLeft(sliderWidth));
+    mixSlider.setBounds(sliderArea.removeFromLeft(sliderWidth));
+    crossoverSlider.setBounds(sliderArea);
 }

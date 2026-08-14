@@ -75,10 +75,24 @@ void MultibandReverbAudioProcessor::releaseResources() { transportComponent.rele
 void MultibandReverbAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, [[maybe_unused]] juce::MidiBuffer &midiMessages) {
     juce::ScopedNoDenormals noDenormals;
 
-    // Get audio from transport if it's active
-    juce::AudioSourceChannelInfo info(buffer);
+       // Store a copy of the input for the AudioTransport player
+    juce::AudioBuffer<float> transportBuffer;
+    transportBuffer.makeCopyOf(buffer);
+    
+    // Process audio from transport if it's playing
+    // NOTE: We're not clearing the buffer first anymore, so DAW audio comes through
+    juce::AudioSourceChannelInfo info(transportBuffer);
     transportComponent.getNextAudioBlock(info);
-
+    
+    // If transport is playing, mix its output with the input
+    if (transportComponent.isTransportPlaying()) {
+        // Mix transport audio with input
+        for (int channel = 0; channel < buffer.getNumChannels(); ++channel) {
+            // Mix with a 50/50 balance - adjust as needed
+            buffer.addFrom(channel, 0, transportBuffer, channel, 0, buffer.getNumSamples(), 0.5f);
+        }
+    }
+    
     const int numSamples = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();
 

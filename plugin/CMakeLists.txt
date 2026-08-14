@@ -1,5 +1,8 @@
     cmake_minimum_required(VERSION 3.21)
 
+    # option (BUILD_AAX "Build AAX plugin" ON)
+    # juce_set_aax_sdk_path("/Users/james/Downloads/aax-sdk-2-8-1")
+    
     project(MultibandReverb VERSION 0.1.0)
 
     juce_add_plugin(${PROJECT_NAME}
@@ -8,8 +11,9 @@
         NEEDS_MIDI_OUTPUT FALSE
         PLUGIN_MANUFACTURER_CODE Jalt
         PLUGIN_CODE AUPL
-        FORMATS AU VST3 Standalone
+        FORMATS AU VST3 Standalone 
         PRODUCT_NAME "MultibandReverb"
+        COMPANY_NAME "jamesalt"
     )
 
     # Collect all source files
